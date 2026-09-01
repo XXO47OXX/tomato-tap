@@ -22,8 +22,6 @@ A normal reverse proxy is enough for one stable upstream. Tomato Tap becomes use
 - usage and cost need to be attributed by provider, physical model, logical route, and currency;
 - credentials and routing policy must remain local and reload without downtime.
 
-Tomato Tap keeps those decisions local and auditable. If you need organizations, tenants, customer billing, and a distributed control plane, a larger multi-tenant gateway such as New API or Sub2API will usually be a better fit.
-
 ## Where should I start?
 
 | Your situation | Recommended first step |
