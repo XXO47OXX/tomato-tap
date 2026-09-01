@@ -1,0 +1,8 @@
+.env
+.env.*
+!.env.example
+config/local/
+pricing/local/
+runtime/
+*.tgz
+*.tar.gz

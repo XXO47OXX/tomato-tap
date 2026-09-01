@@ -1,0 +1,32 @@
+# Runtime artifacts — never commit
+/runtime/
+/samples
+/usage.log
+/proxy.out
+/budget.json
+/coverage/
+/node_modules/
+*.pid
+*.supervisor.pid
+rotate_log.history
+backups/
+
+# Plaintext credentials — must never enter git
+grok_sessions.txt
+/.env*
+!/.env.example
+/config/local/
+/config/*.local.json
+/pricing/local/
+*.auth.json
+*.credentials.json
+
+# Backups of previous proxy.mjs revisions (kept locally for rollback)
+proxy.mjs.bak-*
+*.bak_*
+
+# Editor / OS noise
+.worktrees/
+.DS_Store
+*.swp
+*~

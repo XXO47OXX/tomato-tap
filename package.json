@@ -1,0 +1,58 @@
+{
+  "name": "tomato-tap",
+  "version": "0.3.0",
+  "description": "A provider-aware OpenAI and Anthropic compatible LLM gateway.",
+  "type": "module",
+  "private": false,
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/XXO47OXX/tomato-tap.git"
+  },
+  "homepage": "https://github.com/XXO47OXX/tomato-tap#readme",
+  "bugs": {
+    "url": "https://github.com/XXO47OXX/tomato-tap/issues"
+  },
+  "keywords": [
+    "llm",
+    "gateway",
+    "openai",
+    "anthropic",
+    "model-routing",
+    "api-proxy"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "tomato-tap": "bin/tomato-tap.mjs",
+    "mimo-tap": "bin/mimo-tap.mjs"
+  },
+  "scripts": {
+    "start": "node ./bin/tomato-tap.mjs",
+    "test": "node --test ./tests/*.mjs",
+    "check": "node ./tools/check.mjs && node ./tools/check-public-isolation.mjs",
+    "check:public": "node ./tools/check-public-isolation.mjs"
+  },
+  "files": [
+    "bin",
+    "config/models.json",
+    "config/relays.example.json",
+    "config/relays.json",
+    "config/vendors.json",
+    "pricing",
+    "scripts",
+    "src",
+    "docs",
+    "CHANGELOG.md",
+    "COMMERCIAL-LICENSING.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "README.md",
+    "README_en.md",
+    "SECURITY.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

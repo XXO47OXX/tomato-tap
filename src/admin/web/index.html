@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Tomato Tap Console</title>
+  <link rel="stylesheet" href="/admin/assets/app.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#overview" aria-label="Tomato Tap 首页">
+        <span class="brand-mark" aria-hidden="true"><span></span></span>
+        <span class="brand-copy"><b>Tomato Tap</b><small>本地模型网关</small></span>
+      </a>
+      <nav class="main-nav" aria-label="主导航">
+        <div class="nav-group-label">观察</div>
+        <a href="#overview" data-route="overview"><span>工作台</span></a>
+        <a href="#usage" data-route="usage"><span>用量与费用</span></a>
+        <a href="#diagnostics" data-route="diagnostics"><span>诊断</span></a>
+        <div class="nav-group-label">配置</div>
+        <a href="#models" data-route="models"><span>模型与路由</span></a>
+        <a href="#connections" data-route="connections"><span>上游与凭据</span></a>
+        <a href="#settings" data-route="settings"><span>设置</span></a>
+      </nav>
+      <div class="sidebar-foot">
+        <span id="connection-dot" class="status-dot"></span>
+        <span><b id="connection-label">正在连接</b><small>v0.3.0 · 本地实例</small></span>
+      </div>
+    </aside>
+
+    <section class="workspace">
+      <header class="topbar">
+        <div class="page-heading">
+          <p id="page-kicker" class="eyebrow">运行与用量</p>
+          <h1 id="page-title">概览</h1>
+        </div>
+        <div class="top-actions">
+          <div class="runtime-pill"><span class="runtime-pulse"></span><span id="reload-state" class="reload-state">配置状态未知</span></div>
+          <button class="button secondary reload-button" data-action="reload"><span aria-hidden="true">↻</span><span>重载配置</span></button>
+        </div>
+      </header>
+      <main id="app" class="content" aria-live="polite">
+        <div class="loading-card"><span class="spinner"></span>正在读取本地网关状态…</div>
+      </main>
+    </section>
+  </div>
+
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+
+  <div id="drawer-layer" class="drawer-layer" hidden>
+    <button class="drawer-backdrop" data-action="close-drawer" aria-label="关闭详情"></button>
+    <aside id="detail-drawer" class="detail-drawer" aria-labelledby="drawer-title">
+      <header class="drawer-head"><div><p id="drawer-kicker"></p><h2 id="drawer-title"></h2></div><button class="icon-button" data-action="close-drawer" aria-label="关闭">×</button></header>
+      <div id="drawer-body" class="drawer-body"></div>
+    </aside>
+  </div>
+
+  <dialog id="modal" class="modal">
+    <form method="dialog" class="modal-frame">
+      <header class="modal-head">
+        <div><p id="modal-kicker" class="eyebrow"></p><h2 id="modal-title"></h2></div>
+        <button class="icon-button" value="cancel" aria-label="关闭">×</button>
+      </header>
+      <div id="modal-body" class="modal-body"></div>
+    </form>
+  </dialog>
+
+  <dialog id="auth-modal" class="modal compact">
+    <form id="auth-form" method="dialog" class="modal-frame">
+      <header class="modal-head"><div><p class="eyebrow">管理端访问</p><h2>输入管理令牌</h2></div></header>
+      <div class="modal-body">
+        <p class="muted">该实例启用了管理端认证。令牌只保存在当前标签页的 sessionStorage。</p>
+        <label class="field"><span>管理令牌</span><input name="token" type="password" autocomplete="off" required></label>
+        <div class="form-actions"><button class="button primary" value="default">连接</button></div>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="/admin/assets/app.js"></script>
+</body>
+</html>

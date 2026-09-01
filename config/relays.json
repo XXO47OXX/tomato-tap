@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "_doc": "Example metadata only. Replace api.example.com locally and add the matching key to .env.",
+  "relays": {
+    "example": {
+      "provider": "Example provider",
+      "description_en": "Disabled example OpenAI-compatible deployment.",
+      "description_zh": "默认禁用的 OpenAI 兼容部署示例。",
+      "disabled": true,
+      "host": "api.example.com",
+      "path": "/v1",
+      "models": [
+        "example-model"
+      ],
+      "canonicalModels": [
+        "example-model"
+      ],
+      "apiFormats": [
+        "openai"
+      ],
+      "auth": "bearer",
+      "cap": {
+        "initial": 1,
+        "min": 1,
+        "max": 4
+      }
+    }
+  }
+}

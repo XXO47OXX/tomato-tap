@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "relays": {
+    "provider_a": {
+      "provider": "provider-a",
+      "host": "api.example.com",
+      "path": "/v1",
+      "models": ["provider-model-name"],
+      "aliases": {"stable-model-name": "provider-model-name"},
+      "canonicalModels": ["stable-model-name"],
+      "apiFormats": ["openai"],
+      "auth": "bearer",
+      "cap": {"initial": 1, "min": 1, "max": 4},
+      "rateLimit": {"requestsPerMinute": 60, "mode": "paced"},
+      "proxy": false
+    }
+  }
+}

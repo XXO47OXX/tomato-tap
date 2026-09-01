@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "_doc": [
+    "Public template only. Keep private aliases and contract prices outside the repository.",
+    "Set TOMATO_TAP_PRICING_OVERRIDES_PATH to load a private override document."
+  ],
+  "aliases": {},
+  "models": {}
+}

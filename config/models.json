@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "_doc": "Minimal safe policy. Replace the example deployment with models available from your own providers.",
+  "realModels": {
+    "example-model": {
+      "qualityTier": "standard",
+      "capabilities": [
+        "instruction_following"
+      ],
+      "thinkingAdapter": "none",
+      "maxInflight": 4,
+      "initialLatencyMs": 1000,
+      "firstByteTimeoutMs": 30000,
+      "totalTimeoutMs": 120000
+    }
+  },
+  "taskSubtypes": {},
+  "logicalModels": {
+    "balanced": {
+      "requiredCapabilities": [
+        "instruction_following"
+      ],
+      "candidates": [
+        "example-model"
+      ],
+      "candidateStrategy": "fair",
+      "maxInflight": 4,
+      "maxAttempts": 2,
+      "deadlineMs": 60000
+    }
+  }
+}

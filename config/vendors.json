@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "_doc": "Safe starter configuration. Credentials belong in .env and deployment metadata belongs in relays.json.",
+  "vendors": [
+    {
+      "id": "relay",
+      "displayName": "OpenAI-compatible relays",
+      "description_en": "Generic OpenAI-compatible deployments declared in relays.json.",
+      "description_zh": "在 relays.json 中声明的通用 OpenAI 兼容部署。",
+      "category": "aimd-pool",
+      "envDiscovery": "multi",
+      "envPrefix": "^(?:tomato_tap|mimotap)_relay_(.+?)_key$",
+      "routes": [
+        {
+          "prefix": "/oa/v1",
+          "apiFormat": "openai",
+          "auth": "bearer",
+          "rewrite": {
+            "from": "^/oa/v1",
+            "to": ""
+          }
+        },
+        {
+          "prefix": "/anthropic",
+          "apiFormat": "anthropic",
+          "auth": "x-api-key",
+          "rewrite": {
+            "from": "^/anthropic",
+            "to": ""
+          }
+        }
+      ]
+    }
+  ]
+}
