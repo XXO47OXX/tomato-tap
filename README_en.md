@@ -19,21 +19,21 @@ A normal reverse proxy is enough for one stable upstream. Tomato Tap becomes use
 - a 429, 401, exhausted quota, or temporary network failure must not disable the whole pool;
 - some keys need a stable egress IP while others can connect directly or share a proxy;
 - an HTTP 200 may still contain an invalid model response that must not reach the client;
-- usage and cost need to be attributed by provider, physical model, logical route, and currency;
+- usage and cost need to be attributed by provider, real model, logical route, and currency;
 - credentials and routing policy must remain local and reload without downtime.
 
 ## Where should I start?
 
 | Your situation | Recommended first step |
 |---|---|
-| One provider and one key | Add one upstream and call its physical model directly |
+| One provider and one key | Add one upstream and call its real model directly |
 | Several keys for one provider | Use **Append Key** so every key has independent limits and cooldowns |
-| Similar models from several providers | Normalize their physical model name, then create a logical model |
+| Similar models from several providers | Normalize their real-model name, then create a logical model |
 | Downstream clients cannot track route changes | Let them request one stable logical name such as `balanced` |
 | Every key needs a different IP | Use sticky-auto or a pinned node in Egress |
 | Quota recovery time is uncertain | Configure quota probing and recovery policy for that upstream |
 | Local, single-user installation | Keep the default loopback binding and trusted-client mode |
-| Shared or downstream distribution | Enable client authentication and read [SECURITY.md](SECURITY.md) |
+| Shared or downstream distribution | Put it behind a firewall or authenticating reverse proxy and read [SECURITY.md](SECURITY.md) |
 
 ## Three-minute quick start
 
@@ -77,7 +77,7 @@ The example `balanced` route becomes ready only after you assign at least one us
 |---|---|---|
 | Provider / Channel | Endpoint, protocol, authentication, RPM, and capacity | Plaintext keys in public configuration |
 | Key | Credential, live capacity, cooldown, quota state, and egress binding | Logical-model capability |
-| Physical model | Canonical name, capabilities, quality, reasoning adapter, and timeouts | A single provider identity |
+| Real model | Canonical name, capabilities, quality, reasoning adapter, and timeouts | A single provider identity |
 | Logical model | Stable client name, candidates, selection policy, and retry budget | Credentials |
 | Egress | Direct, shared, sticky-auto, pinned-node, or fixed HTTP transport | Nothing is enabled implicitly |
 
@@ -88,8 +88,8 @@ The example `balanced` route becomes ready only after you assign at least one us
 ### Pool models with equivalent capability
 
 1. Add each provider and key;
-2. map provider-specific IDs to one canonical physical model name;
-3. describe capability, quality, and reasoning behavior under **Physical models**;
+2. map provider-specific IDs to one canonical real-model name;
+3. describe capability, quality, and reasoning behavior under **Real models**;
 4. create a logical model and select its candidates;
 5. inspect the current decision with `GET /__route/plan?model=<logical>`;
 6. configure downstream clients to request only the logical name.
@@ -175,7 +175,7 @@ Tomato Tap distinguishes configured, dispatchable, probing, recently validated, 
 - 401, 403, 429, network failures, and invalid responses can use different recovery scopes;
 - a quota prober can test low-frequency recovery when the exact reset time is unknown;
 - an invalid HTTP 200 is never returned downstream as a successful model result;
-- usage can be grouped by date, provider, physical model, logical route, and currency;
+- usage can be grouped by date, provider, real model, logical route, and currency;
 - public list prices and private contract prices are separate, and currencies are not forcibly converted;
 - request/response sample logging is off by default and supports retention and size limits when enabled.
 
@@ -209,7 +209,7 @@ Useful endpoints:
 - `GET /<route>/models` — route-scoped model inventory;
 - `GET /__usage` — usage UI, price catalog, and JSON API.
 
-The server binds to `127.0.0.1` and trusts local clients by default. Never expose trusted mode directly to an untrusted network. Enable downstream authentication before shared distribution and read [SECURITY.md](SECURITY.md).
+The server binds to `127.0.0.1` and trusts local clients by default. This release does not provide secondary client API-key authentication. Never expose trusted mode directly to an untrusted network; shared access must sit behind a firewall, protected network, or authenticating reverse proxy. Read [SECURITY.md](SECURITY.md) before deployment.
 
 ## Repository layout
 
