@@ -7,6 +7,7 @@ import { loadRelayRegistry } from '../providers/relay-loader.mjs';
 import { loadModelPolicy } from '../routing/model-policy.mjs';
 import { loadTimeRoutePolicy } from '../routing/time-route-scheduler.mjs';
 import { applyLegacyEnvAliases } from './env-compat.mjs';
+import { normalizeConfigBackend, selectConfigBackend } from './config-backend.mjs';
 
 const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -36,19 +37,38 @@ export function createRuntimeConfigLoader({
   relaysPath = join(PROJECT_ROOT, 'config', 'relays.json'),
   modelsPath = join(PROJECT_ROOT, 'config', 'models.json'),
   timeRoutesPath = join(PROJECT_ROOT, 'runtime', 'time_routes.json'),
+  sqliteSnapshotLoader = null,
+  registryPath = '',
 } = {}) {
   if (!functionRegistry?.auth) throw new Error('runtime-config: functionRegistry.auth is required');
-  const paths = Object.freeze({ envFile, vendorsPath, relaysPath, modelsPath, timeRoutesPath });
+  const paths = Object.freeze({
+    envFile, vendorsPath, relaysPath, modelsPath, timeRoutesPath, registryPath,
+  });
   let cached = null;
 
   function load() {
     const envText = readOptional(envFile);
     const fileEnv = parseDotenv(envText);
     applyLegacyEnvAliases(fileEnv, { warn: false });
-    const env = Object.freeze({ ...fileEnv, ...processEnvOverrides });
+    const bootstrapEnv = { ...fileEnv, ...processEnvOverrides };
+    const requestedBackend = normalizeConfigBackend(bootstrapEnv.TOMATO_TAP_CONFIG_BACKEND);
+    const candidateSnapshot = requestedBackend !== 'files' && sqliteSnapshotLoader
+      ? sqliteSnapshotLoader()
+      : null;
+    const configBackend = selectConfigBackend({
+      requested: requestedBackend,
+      registrySnapshot: candidateSnapshot,
+    });
+    const registrySnapshot = configBackend.registrySnapshot;
+    const storedEnv = registrySnapshot ? registrySnapshot.env : fileEnv;
+    const env = Object.freeze({ ...storedEnv, ...processEnvOverrides });
     const vendorDocument = readRequired(vendorsPath);
-    const relayDocument = readRequired(relaysPath);
-    const modelDocument = readRequired(modelsPath);
+    const relayDocument = registrySnapshot
+      ? JSON.stringify(registrySnapshot.relays)
+      : readRequired(relaysPath);
+    const modelDocument = registrySnapshot
+      ? JSON.stringify(registrySnapshot.models)
+      : readRequired(modelsPath);
     const timeRoutesDocument = readOptional(timeRoutesPath);
     const vendorDefinitions = JSON.parse(vendorDocument).vendors || [];
     const digest = createHash('sha256');
@@ -58,8 +78,13 @@ export function createRuntimeConfigLoader({
       ['relays', relayDocument],
       ['models', modelDocument],
       ['time-routes', timeRoutesDocument],
+      ['config-backend', `${configBackend.requested}:${configBackend.effective}`],
     ]) {
       digest.update(label).update('\0').update(value).update('\0');
+    }
+    if (registrySnapshot) {
+      digest.update('config-registry').update('\0')
+        .update(String(registrySnapshot.revision)).update('\0');
     }
     for (const vendor of vendorDefinitions) {
       if (vendor.envDiscovery !== 'dump_file' || !vendor.envDumpPath) continue;
@@ -74,8 +99,14 @@ export function createRuntimeConfigLoader({
       functionRegistry,
       { path: vendorsPath },
     );
-    const relayRegistry = loadRelayRegistry({ path: relaysPath });
-    const modelPolicy = loadModelPolicy({ path: modelsPath });
+    const relayRegistry = loadRelayRegistry({
+      path: registrySnapshot ? registryPath : relaysPath,
+      document: registrySnapshot?.relays,
+    });
+    const modelPolicy = loadModelPolicy({
+      path: registrySnapshot ? registryPath : modelsPath,
+      document: registrySnapshot?.models,
+    });
     const timeRoutePolicy = timeRoutesDocument
       ? loadTimeRoutePolicy({ path: timeRoutesPath })
       : loadTimeRoutePolicy();
@@ -88,6 +119,10 @@ export function createRuntimeConfigLoader({
       VENDORS: Object.freeze(VENDORS),
       VENDOR_CAP_OVERRIDES: Object.freeze(VENDOR_CAP_OVERRIDES),
       relayRegistry,
+      configBackend: Object.freeze({
+        requested: configBackend.requested,
+        effective: configBackend.effective,
+      }),
       modelPolicy,
       timeRoutePolicy,
       vendorSchemaVersion,

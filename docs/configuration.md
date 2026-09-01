@@ -11,6 +11,25 @@ TOMATO_TAP_ENV_FILE=/path/to/tomato-tap.env
 TOMATO_TAP_PRICING_OVERRIDES_PATH=/path/to/pricing-overrides.json
 ```
 
+The operator-managed provider, credential, and model documents support three
+storage modes:
+
+```dotenv
+TOMATO_TAP_CONFIG_BACKEND=files # files | sqlite | auto
+TOMATO_TAP_CONFIG_DB_PATH=/path/to/tomato-config.db
+```
+
+`files` is the portable default. `sqlite` requires Node.js 22.5 or newer and
+imports the current local JSON/env documents when the database is first
+activated. The admin console then reads and writes SQLite directly. `auto`
+uses an already active database but otherwise keeps file mode. A malformed or
+unsupported database is an error; `auto` does not hide data corruption by
+silently loading stale files. Changing the mode requires a process restart.
+
+Use `scripts/config-storage.mjs import-files` and `export-files` to preview a
+direction, then repeat it with `--apply`. Export creates a local backup before
+changing files, and neither command prints credentials.
+
 For a normal local installation, start Tomato Tap and open
 `http://127.0.0.1:8888/admin/`. The console creates and maintains ignored,
 mode-`0600` files under `config/local/` and writes credentials to `.env`.

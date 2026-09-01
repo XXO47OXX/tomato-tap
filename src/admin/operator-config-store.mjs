@@ -36,18 +36,23 @@ export function createOperatorConfigStore({
   relaysPath,
   modelsPath,
   processEnvOverrides = {},
+  repository = null,
 } = {}) {
   for (const [label, path] of Object.entries({ envPath, relaysPath, modelsPath })) {
     if (!path) throw new Error(`operator config requires ${label}`);
   }
+  const config = repository || createFileRepository({ envPath, relaysPath, modelsPath });
 
   function snapshot() {
-    const relays = readJson(relaysPath);
-    const models = readJson(modelsPath);
-    const fileEnv = parseDotenv(readOptional(envPath));
+    const relays = config.readRelays();
+    const models = config.readModels();
+    const fileEnv = config.readEnv();
     const effectiveEnv = { ...fileEnv, ...processEnvOverrides };
+    const localSource = config.mode === 'sqlite' ? 'sqlite' : 'file';
     const providers = Object.entries(relays.relays || {})
-      .map(([id, relay]) => providerSummary(id, relay, fileEnv, processEnvOverrides))
+      .map(([id, relay]) => providerSummary(
+        id, relay, fileEnv, processEnvOverrides, localSource,
+      ))
       .sort((left, right) => left.id.localeCompare(right.id));
     const realModels = Object.entries(models.realModels || {}).map(([name, policy]) => ({
       name,
@@ -62,15 +67,16 @@ export function createOperatorConfigStore({
     ));
     return {
       configured: enabledProviders.length > 0,
+      storage: config.mode,
       paths: {
-        env: redactPath(envPath),
-        relays: redactPath(relaysPath),
-        models: redactPath(modelsPath),
+        env: redactPath(config.paths.env),
+        relays: redactPath(config.paths.relays),
+        models: redactPath(config.paths.models),
       },
       providers,
       realModels,
       logicalModels,
-      egress: egressSummary(fileEnv, processEnvOverrides),
+      egress: egressSummary(fileEnv, processEnvOverrides, localSource),
       settings: Object.fromEntries(OPERATOR_MANAGED_SETTINGS.map((name) => [
         name,
         String(effectiveEnv[name] ?? ''),
@@ -80,9 +86,9 @@ export function createOperatorConfigStore({
 
   function upsertProvider(input) {
     const provider = normalizeProviderInput(input);
-    const relays = readJson(relaysPath);
-    const models = readJson(modelsPath);
-    const fileEnv = parseDotenv(readOptional(envPath));
+    const relays = config.readRelays();
+    const models = config.readModels();
+    const fileEnv = config.readEnv();
     const credentialEnvName = credentialName(provider.id);
     const legacyCredentialEnvName = legacyCredentialName(provider.id);
     const credentialFromProcess = Object.hasOwn(processEnvOverrides, credentialEnvName)
@@ -185,35 +191,31 @@ export function createOperatorConfigStore({
     ensureAtLeastOneLogicalModel(models, modelMapping.canonicalModels);
 
     validateCandidateDocuments(relaysPath, relays, modelsPath, models);
-    atomicWriteJson(relaysPath, relays);
-    atomicWriteJson(modelsPath, models);
+    const envChanges = {};
     if (provider.apiKey) {
-      updateEnvFile(envPath, {
-        [credentialEnvName]: provider.apiKey,
-        [legacyCredentialEnvName]: null,
-      });
+      envChanges[credentialEnvName] = provider.apiKey;
+      envChanges[legacyCredentialEnvName] = null;
     } else if (provider.clearCredential === true) {
-      updateEnvFile(envPath, {
-        [credentialEnvName]: null,
-        [legacyCredentialEnvName]: null,
-      });
+      envChanges[credentialEnvName] = null;
+      envChanges[legacyCredentialEnvName] = null;
     }
     if (provider.fixedProxyUrl) {
-      updateEnvFile(envPath, { [fixedProxyName]: provider.fixedProxyUrl });
+      envChanges[fixedProxyName] = provider.fixedProxyUrl;
     } else if (!fixedProxyMode && fileEnv[fixedProxyName]) {
-      updateEnvFile(envPath, { [fixedProxyName]: null });
+      envChanges[fixedProxyName] = null;
     }
+    config.commit({ relays, models, envChanges });
     return snapshot();
   }
 
   function setProviderEnabled(id, enabled) {
     id = normalizeSlug(id);
     if (typeof enabled !== 'boolean') throw new Error('enabled must be boolean');
-    const relays = readJson(relaysPath);
+    const relays = config.readRelays();
     if (!relays.relays?.[id]) throw new Error(`unknown provider ${id}`);
     relays.relays[id].disabled = !enabled;
-    validateCandidateDocuments(relaysPath, relays, modelsPath, readJson(modelsPath));
-    atomicWriteJson(relaysPath, relays);
+    validateCandidateDocuments(relaysPath, relays, modelsPath, config.readModels());
+    config.writeRelays(relays);
     return snapshot();
   }
 
@@ -227,23 +229,22 @@ export function createOperatorConfigStore({
     if (processSecretNames.some((name) => Object.hasOwn(processEnvOverrides, name))) {
       throw new Error(`provider ${id} has process-managed secrets; remove them from the process environment first`);
     }
-    const relays = readJson(relaysPath);
+    const relays = config.readRelays();
     if (!relays.relays?.[id]) throw new Error(`unknown provider ${id}`);
     delete relays.relays[id];
-    validateCandidateDocuments(relaysPath, relays, modelsPath, readJson(modelsPath));
-    atomicWriteJson(relaysPath, relays);
+    validateCandidateDocuments(relaysPath, relays, modelsPath, config.readModels());
+    const envChanges = {};
     if (clearCredential) {
-      updateEnvFile(envPath, {
-        [credentialName(id)]: null,
-        [legacyCredentialName(id)]: null,
-        [proxyCredentialName(id)]: null,
-      });
+      envChanges[credentialName(id)] = null;
+      envChanges[legacyCredentialName(id)] = null;
+      envChanges[proxyCredentialName(id)] = null;
     }
+    config.commit({ relays, envChanges });
     return snapshot();
   }
 
   function upsertLogicalModel(input) {
-    const models = readJson(modelsPath);
+    const models = config.readModels();
     const name = normalizeModelName(input?.name, 'logical model name');
     const candidates = uniqueNames(input?.candidates || []);
     if (candidates.length === 0) throw new Error('logical model requires at least one candidate');
@@ -311,14 +312,14 @@ export function createOperatorConfigStore({
     }
     if (existingName && existingName !== name) delete models.logicalModels[existingName];
     models.logicalModels[name] = next;
-    validateCandidateDocuments(relaysPath, readJson(relaysPath), modelsPath, models);
-    atomicWriteJson(modelsPath, models);
+    validateCandidateDocuments(relaysPath, config.readRelays(), modelsPath, models);
+    config.writeModels(models);
     return snapshot();
   }
 
   function upsertRealModel(input) {
     const model = normalizeRealModelInput(input);
-    const models = readJson(modelsPath);
+    const models = config.readModels();
     const actual = Object.keys(models.realModels || {}).find(
       (candidate) => candidate.toLowerCase() === model.name.toLowerCase(),
     );
@@ -335,14 +336,14 @@ export function createOperatorConfigStore({
       totalTimeoutMs: model.totalTimeoutMs,
       standaloneOnly: model.standaloneOnly,
     };
-    validateCandidateDocuments(relaysPath, readJson(relaysPath), modelsPath, models);
-    atomicWriteJson(modelsPath, models);
+    validateCandidateDocuments(relaysPath, config.readRelays(), modelsPath, models);
+    config.writeModels(models);
     return snapshot();
   }
 
   function removeLogicalModel(name) {
     name = normalizeModelName(name, 'logical model name');
-    const models = readJson(modelsPath);
+    const models = config.readModels();
     const actual = Object.keys(models.logicalModels || {})
       .find((candidate) => candidate.toLowerCase() === name.toLowerCase());
     if (!actual) throw new Error(`unknown logical model ${name}`);
@@ -350,13 +351,13 @@ export function createOperatorConfigStore({
       throw new Error('at least one logical model must remain configured');
     }
     delete models.logicalModels[actual];
-    validateCandidateDocuments(relaysPath, readJson(relaysPath), modelsPath, models);
-    atomicWriteJson(modelsPath, models);
+    validateCandidateDocuments(relaysPath, config.readRelays(), modelsPath, models);
+    config.writeModels(models);
     return snapshot();
   }
 
   function updateSettings(values) {
-    updateEnvFile(envPath, normalizeSettings(values));
+    config.updateEnv(normalizeSettings(values));
     return snapshot();
   }
 
@@ -367,14 +368,14 @@ export function createOperatorConfigStore({
         throw new Error(`${name} is supplied by the process environment and is not writable`);
       }
     }
-    if (Object.keys(changes).length > 0) updateEnvFile(envPath, changes);
+    if (Object.keys(changes).length > 0) config.updateEnv(changes);
     return snapshot();
   }
 
   function providerDiscoveryTarget(input) {
-    const fileEnv = parseDotenv(readOptional(envPath));
+    const fileEnv = config.readEnv();
     const id = input?.id ? normalizeSlug(input.id) : '';
-    const relay = id ? readJson(relaysPath).relays?.[id] : null;
+    const relay = id ? config.readRelays().relays?.[id] : null;
     const envName = id ? credentialName(id) : '';
     const legacyName = id ? `mimotap_relay_${id}_key` : '';
     const fallback = relay ? {
@@ -404,11 +405,29 @@ export function createOperatorConfigStore({
   });
 }
 
-function egressSummary(fileEnv, processEnvOverrides) {
+function createFileRepository({ envPath, relaysPath, modelsPath }) {
+  return Object.freeze({
+    mode: 'files',
+    paths: Object.freeze({ env: envPath, relays: relaysPath, models: modelsPath }),
+    readEnv: () => parseDotenv(readOptional(envPath)),
+    readRelays: () => readJson(relaysPath),
+    readModels: () => readJson(modelsPath),
+    writeRelays: (value) => atomicWriteJson(relaysPath, value),
+    writeModels: (value) => atomicWriteJson(modelsPath, value),
+    updateEnv: (changes) => updateEnvFile(envPath, changes),
+    commit({ relays, models, envChanges = {} } = {}) {
+      if (relays) atomicWriteJson(relaysPath, relays);
+      if (models) atomicWriteJson(modelsPath, models);
+      if (Object.keys(envChanges).length > 0) updateEnvFile(envPath, envChanges);
+    },
+  });
+}
+
+function egressSummary(fileEnv, processEnvOverrides, localSource = 'files') {
   const effective = { ...fileEnv, ...processEnvOverrides };
   const source = (names) => {
     if (names.some((name) => Object.hasOwn(processEnvOverrides, name))) return 'process';
-    if (names.some((name) => Object.hasOwn(fileEnv, name))) return 'file';
+    if (names.some((name) => Object.hasOwn(fileEnv, name))) return localSource;
     return 'none';
   };
   const subscriptionNames = [
@@ -457,13 +476,13 @@ function egressSummary(fileEnv, processEnvOverrides) {
   };
 }
 
-function providerSummary(id, relay, fileEnv, processEnvOverrides) {
+function providerSummary(id, relay, fileEnv, processEnvOverrides, localSource = 'files') {
   const envName = credentialName(id);
   const legacyName = `mimotap_relay_${id}_key`;
   const source = processEnvOverrides[envName] != null || processEnvOverrides[legacyName] != null
     ? 'process'
     : fileEnv[envName] != null || fileEnv[legacyName] != null
-      ? 'file'
+      ? localSource
       : 'none';
   const credential = source === 'process'
     ? processEnvOverrides[envName] ?? processEnvOverrides[legacyName]
@@ -471,7 +490,7 @@ function providerSummary(id, relay, fileEnv, processEnvOverrides) {
   const fixedProxyName = proxyCredentialName(id);
   const fixedProxySource = processEnvOverrides[fixedProxyName] != null
     ? 'process'
-    : fileEnv[fixedProxyName] != null ? 'file' : 'none';
+    : fileEnv[fixedProxyName] != null ? localSource : 'none';
   const fixedProxyConfigured = fixedProxySource !== 'none';
   return {
     id,

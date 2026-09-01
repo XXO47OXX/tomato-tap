@@ -129,6 +129,35 @@ curl http://127.0.0.1:8888/oa/v1/chat/completions \
 | 私人别名和协议价格 | `pricing/local/` 或外部覆盖文件 | 永不 |
 | 冷却、出口绑定、用量和样本 | `runtime/` | 永不 |
 
+上游、Key 和模型配置可以选择文件或 SQLite 存储：
+
+```dotenv
+# files（默认）、sqlite 或 auto
+TOMATO_TAP_CONFIG_BACKEND=files
+# TOMATO_TAP_CONFIG_DB_PATH=/var/lib/tomato-tap/tomato-config.db
+```
+
+- `files` 使用 `config/local/*.json` 和 `.env`，兼容 Node.js 20+；
+- `sqlite` 首次启动时从现有本地文件导入，之后控制台直接读写权限为
+  `0600` 的数据库，需要 Node.js 22.5+；
+- `auto` 只在已有激活数据库时使用 SQLite，否则回退到文件。数据库损坏
+  或版本不兼容不会静默回退。
+
+切换存储后需要重启。`vendors.json` 中的协议适配和公开价格仍是文件策略，
+不会与私人凭据混入同一配置层。
+
+已有实例可先预检再切换；两个方向默认都是演练，只有 `--apply` 才写入：
+
+```bash
+node scripts/config-storage.mjs import-files
+node scripts/config-storage.mjs import-files --apply
+node scripts/config-storage.mjs export-files
+node scripts/config-storage.mjs export-files --apply
+```
+
+导出回文件前会在 `runtime/backups/` 创建权限为 `0600` 的本地备份，命令
+只输出脱敏计数，不输出 Key。
+
 高级用户可以手动维护配置：
 
 ```dotenv

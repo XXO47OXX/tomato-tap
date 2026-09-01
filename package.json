@@ -32,7 +32,8 @@
     "start": "node ./bin/tomato-tap.mjs",
     "test": "node --test ./tests/*.mjs",
     "check": "node ./tools/check.mjs && node ./tools/check-public-isolation.mjs",
-    "check:public": "node ./tools/check-public-isolation.mjs"
+    "check:public": "node ./tools/check-public-isolation.mjs",
+    "config:status": "node ./scripts/config-storage.mjs status"
   },
   "files": [
     "bin",

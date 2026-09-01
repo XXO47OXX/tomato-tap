@@ -129,6 +129,38 @@ A later layer overrides only fields it explicitly owns; other request content is
 | Private aliases and negotiated prices | `pricing/local/` or an external override | Never |
 | Cooldowns, bindings, usage, and samples | `runtime/` | Never |
 
+Provider, credential, and model configuration can use files or SQLite:
+
+```dotenv
+# files (default), sqlite, or auto
+TOMATO_TAP_CONFIG_BACKEND=files
+# TOMATO_TAP_CONFIG_DB_PATH=/var/lib/tomato-tap/tomato-config.db
+```
+
+- `files` uses `config/local/*.json` and `.env` and works on Node.js 20+.
+- `sqlite` imports the existing local files on first start, then lets the
+  console read and write the mode-`0600` database directly. It requires
+  Node.js 22.5+.
+- `auto` uses SQLite only when an active database already exists, otherwise it
+  falls back to files. Corrupt or incompatible databases never silently fall
+  back.
+
+Restart after changing the storage backend. Protocol adapters in `vendors.json`
+and public pricing remain file policy and are not mixed with private credentials.
+
+Existing installations can preview and then apply either migration direction.
+Both commands are dry runs unless `--apply` is present:
+
+```bash
+node scripts/config-storage.mjs import-files
+node scripts/config-storage.mjs import-files --apply
+node scripts/config-storage.mjs export-files
+node scripts/config-storage.mjs export-files --apply
+```
+
+Export creates a private mode-`0600` backup under `runtime/backups/`. Command
+output contains redacted counts, never credential values.
+
 Advanced installations may maintain the files manually:
 
 ```dotenv

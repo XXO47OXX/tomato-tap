@@ -19,8 +19,8 @@ const THINKING_ADAPTERS = new Set([
 
 const CANDIDATE_STRATEGIES = new Set(['fair', 'ordered', 'adaptive']);
 
-export function loadModelPolicy({ path = DEFAULT_PATH } = {}) {
-  const raw = JSON.parse(readFileSync(path, 'utf8'));
+export function loadModelPolicy({ path = DEFAULT_PATH, document = null } = {}) {
+  const raw = document || JSON.parse(readFileSync(path, 'utf8'));
   if (raw.schemaVersion !== 1) {
     throw new Error('model-policy schemaVersion must be 1');
   }

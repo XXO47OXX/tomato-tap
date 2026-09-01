@@ -13,6 +13,7 @@ import { loadModelPolicy, realModelPolicy } from '../../routing/model-policy.mjs
 import { parseDotenv } from '../../config/runtime-config.mjs';
 import { resolveStateLayout } from '../../config/state-layout.mjs';
 import { applyLegacyEnvAliases, relayCredential } from '../../config/env-compat.mjs';
+import { normalizeConfigBackend } from '../../config/config-backend.mjs';
 
 process.umask(0o077);
 
@@ -233,13 +234,34 @@ export async function runQuotaProber() {
   applyLegacyEnvAliases(process.env, { warn: true });
   const relaysPath = process.env.TOMATO_TAP_RELAYS_PATH || join(projectRoot, 'config', 'relays.json');
   const modelsPath = process.env.TOMATO_TAP_MODELS_PATH || join(projectRoot, 'config', 'models.json');
+  const stateLayout = resolveStateLayout(projectRoot, process.env);
+  const requestedBackend = normalizeConfigBackend(process.env.TOMATO_TAP_CONFIG_BACKEND);
+  let sqliteStore = null;
+  if (requestedBackend !== 'files') {
+    try {
+      const { createSqliteConfigStore } = await import('../../config/sqlite-config-store.mjs');
+      const candidate = createSqliteConfigStore({
+        path: process.env.TOMATO_TAP_CONFIG_DB_PATH
+          || join(stateLayout.runtimeDir, 'tomato-config.db'),
+      });
+      if (candidate.snapshot()) sqliteStore = candidate;
+      else candidate.close();
+    } catch (error) {
+      const unsupported = error?.code === 'ERR_UNKNOWN_BUILTIN_MODULE'
+        || /node:sqlite|No such built-in module/i.test(String(error?.message || ''));
+      if (requestedBackend !== 'auto' || !unsupported) throw error;
+    }
+  }
+  if (requestedBackend === 'sqlite' && !sqliteStore) {
+    throw new Error('TOMATO_TAP_CONFIG_BACKEND=sqlite requires an active SQLite configuration registry');
+  }
   const initialCatalog = loadProbeCatalog({
     envPath,
     relaysPath,
     modelsPath,
     processEnvOverrides,
+    sqliteSnapshotLoader: sqliteStore ? () => sqliteStore.snapshot() : null,
   });
-  const stateLayout = resolveStateLayout(projectRoot, process.env);
   const socketPath = process.env.TOMATO_TAP_QUOTA_SOCKET_PATH
     || join(stateLayout.runtimeDir, 'quota-control.sock');
   const client = createQuotaControlClient({
@@ -262,6 +284,7 @@ export async function runQuotaProber() {
         relaysPath,
         modelsPath,
         processEnvOverrides,
+        sqliteSnapshotLoader: sqliteStore ? () => sqliteStore.snapshot() : null,
       });
       if (catalog.revision !== catalogRevision) {
         prober.replaceDeployments(catalog.deployments);
@@ -282,6 +305,7 @@ export async function runQuotaProber() {
     stopping = true;
     clearInterval(timer);
     await prober.drain();
+    sqliteStore?.close();
     process.exit(0);
   };
   process.once('SIGTERM', stop);
@@ -293,13 +317,24 @@ function loadProbeCatalog({
   relaysPath,
   modelsPath,
   processEnvOverrides = {},
+  sqliteSnapshotLoader = null,
 }) {
   const envText = existsSync(envPath) ? readFileSync(envPath, 'utf8') : '';
-  const relayText = readFileSync(relaysPath, 'utf8');
-  const modelText = readFileSync(modelsPath, 'utf8');
-  const env = { ...parseDotenv(envText), ...processEnvOverrides };
-  const registry = loadRelayRegistry({ path: relaysPath });
-  const modelPolicy = loadModelPolicy({ path: modelsPath });
+  const sqliteSnapshot = sqliteSnapshotLoader?.() || null;
+  const relayDocument = sqliteSnapshot?.relays || null;
+  const modelDocument = sqliteSnapshot?.models || null;
+  const relayText = relayDocument
+    ? JSON.stringify(relayDocument)
+    : readFileSync(relaysPath, 'utf8');
+  const modelText = modelDocument
+    ? JSON.stringify(modelDocument)
+    : readFileSync(modelsPath, 'utf8');
+  const env = {
+    ...(sqliteSnapshot?.env || parseDotenv(envText)),
+    ...processEnvOverrides,
+  };
+  const registry = loadRelayRegistry({ path: relaysPath, document: relayDocument });
+  const modelPolicy = loadModelPolicy({ path: modelsPath, document: modelDocument });
   const deployments = new Map();
   for (const [deploymentId, meta] of Object.entries(registry.relays)) {
     if (!meta.quotaPolicy || meta.disabled) continue;
@@ -321,9 +356,10 @@ function loadProbeCatalog({
     });
   }
   const revision = createHash('sha256')
-    .update(envText).update('\0')
+    .update(sqliteSnapshot ? JSON.stringify(sqliteSnapshot.env) : envText).update('\0')
     .update(relayText).update('\0')
     .update(modelText)
+    .update('\0').update(String(sqliteSnapshot?.revision || 0))
     .digest('hex').slice(0, 16);
   return { revision, deployments };
 }

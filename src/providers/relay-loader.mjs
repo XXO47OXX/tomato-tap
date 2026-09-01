@@ -14,10 +14,10 @@ const SUPPORTED_SCHEMA = 1;
 
 export function loadRelayRegistry(opts = {}) {
   const path = opts.path || DEFAULT_PATH;
-  if (!existsSync(path)) {
+  if (!opts.document && !existsSync(path)) {
     return { path, relays: {} };
   }
-  const raw = JSON.parse(readFileSync(path, 'utf8'));
+  const raw = opts.document || JSON.parse(readFileSync(path, 'utf8'));
   if (raw.schemaVersion !== SUPPORTED_SCHEMA) {
     throw new Error(`relay-loader: unsupported schemaVersion ${raw.schemaVersion} (expected ${SUPPORTED_SCHEMA})`);
   }

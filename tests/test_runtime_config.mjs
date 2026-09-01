@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -63,7 +63,38 @@ try {
   assert.equal(initial.env.OVERRIDE, 'process');
   assert.equal(initial.env.tomato_tap_relay_a_key, 'file-key');
   assert.equal(initial.modelPolicy.logicalModels.has('basic'), true);
+  assert.deepEqual(initial.configBackend, { requested: 'files', effective: 'files' });
   assert.equal(loader.load(), initial);
+
+  const sqliteLoader = createRuntimeConfigLoader({
+    functionRegistry: { auth: { bearer() {} } },
+    processEnvOverrides: { TOMATO_TAP_CONFIG_BACKEND: 'sqlite', OVERRIDE: 'process' },
+    sqliteSnapshotLoader: () => ({
+      active: true,
+      revision: 7,
+      env: { tomato_tap_relay_a_key: 'sqlite-key', OVERRIDE: 'sqlite' },
+      relays: JSON.parse(`{
+        "schemaVersion": 1,
+        "relays": {"a": {"host": "sqlite.example.test", "path": "/v1", "models": ["real-a"]}}
+      }`),
+      models: JSON.parse(readFileSync(paths.modelsPath, 'utf8')),
+    }),
+    registryPath: join(root, 'tomato-config.db'),
+    ...paths,
+  });
+  const sqliteConfig = sqliteLoader.load();
+  assert.deepEqual(sqliteConfig.configBackend, { requested: 'sqlite', effective: 'sqlite' });
+  assert.equal(sqliteConfig.env.tomato_tap_relay_a_key, 'sqlite-key');
+  assert.equal(sqliteConfig.env.OVERRIDE, 'process');
+  assert.equal(sqliteConfig.relayRegistry.relays.a.host, 'sqlite.example.test');
+
+  const unavailableSqlite = createRuntimeConfigLoader({
+    functionRegistry: { auth: { bearer() {} } },
+    processEnvOverrides: { TOMATO_TAP_CONFIG_BACKEND: 'sqlite' },
+    sqliteSnapshotLoader: () => null,
+    ...paths,
+  });
+  assert.throws(() => unavailableSqlite.load(), /requires an active SQLite configuration registry/);
 
   const candidates = [];
   const errors = [];

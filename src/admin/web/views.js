@@ -330,6 +330,7 @@ export function settingsView(data) {
           ${definition('密钥文件', data.configuration.paths.env)}
           ${definition('上游配置', data.configuration.paths.relays)}
           ${definition('模型配置', data.configuration.paths.models)}
+          ${definition('配置存储', data.configuration.storage === 'sqlite' ? 'SQLite' : 'JSON / .env')}
           ${definition('监听地址', data.status?.access?.bind_host || '127.0.0.1')}
         </dl>
         <button class="button secondary" data-action="export-config">导出脱敏配置</button>

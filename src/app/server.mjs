@@ -35,7 +35,9 @@ import { createQuotaControlServer } from '../providers/quota/quota-control.mjs';
 import {
   createRuntimeConfigLoader,
   createRuntimeConfigWatcher,
+  parseDotenv,
 } from '../config/runtime-config.mjs';
+import { normalizeConfigBackend } from '../config/config-backend.mjs';
 import { createRuntimeGenerationManager } from '../config/runtime-generation.mjs';
 import { createVendorFunctionRegistry } from '../providers/protocol-registry.mjs';
 import { createUpstreamHeaderPolicy } from '../providers/upstream-headers.mjs';
@@ -145,11 +147,48 @@ const OPERATOR_CONFIG_PATHS = ensureOperatorConfigFiles({
   seedRelaysPath: join(projectRoot, 'config', 'relays.json'),
   seedModelsPath: join(projectRoot, 'config', 'models.json'),
 });
+const CONFIG_BACKEND_REQUESTED = normalizeConfigBackend(process.env.TOMATO_TAP_CONFIG_BACKEND);
+const CONFIG_REGISTRY_PATH = process.env.TOMATO_TAP_CONFIG_DB_PATH
+  || join(RUNTIME_STATE_DIR, 'tomato-config.db');
+let SQLITE_CONFIG_STORE = null;
+let SQLITE_OPERATOR_REPOSITORY = null;
+if (CONFIG_BACKEND_REQUESTED !== 'files') {
+  try {
+    const {
+      createSqliteConfigStore,
+      createSqliteOperatorRepository,
+    } = await import('../config/sqlite-config-store.mjs');
+    const candidate = createSqliteConfigStore({ path: CONFIG_REGISTRY_PATH });
+    if (CONFIG_BACKEND_REQUESTED === 'sqlite' && !candidate.snapshot()) {
+      candidate.replaceAll({
+        env: parseDotenv(existsSync(_envPath) ? readFileSync(_envPath, 'utf8') : ''),
+        relays: JSON.parse(readFileSync(OPERATOR_CONFIG_PATHS.relaysPath, 'utf8')),
+        models: JSON.parse(readFileSync(OPERATOR_CONFIG_PATHS.modelsPath, 'utf8')),
+      });
+      console.log(`[tomato-tap] initialized SQLite configuration at ${CONFIG_REGISTRY_PATH}`);
+    }
+    if (candidate.snapshot()) {
+      SQLITE_CONFIG_STORE = candidate;
+      SQLITE_OPERATOR_REPOSITORY = createSqliteOperatorRepository(candidate);
+    } else {
+      candidate.close();
+    }
+  } catch (error) {
+    const unsupported = error?.code === 'ERR_UNKNOWN_BUILTIN_MODULE'
+      || /node:sqlite|No such built-in module/i.test(String(error?.message || ''));
+    if (CONFIG_BACKEND_REQUESTED === 'auto' && unsupported) {
+      console.warn('[tomato-tap] SQLite configuration requires Node.js 22.5+; using files');
+    } else {
+      throw error;
+    }
+  }
+}
 const OPERATOR_CONFIG_STORE = createOperatorConfigStore({
   envPath: _envPath,
   relaysPath: OPERATOR_CONFIG_PATHS.relaysPath,
   modelsPath: OPERATOR_CONFIG_PATHS.modelsPath,
   processEnvOverrides: PROCESS_ENV_OVERRIDES,
+  repository: SQLITE_OPERATOR_REPOSITORY,
 });
 
 // ---- Budget and vendor accounting ----
@@ -229,6 +268,10 @@ const RUNTIME_CONFIG_LOADER = createRuntimeConfigLoader({
   vendorsPath: process.env.TOMATO_TAP_VENDORS_PATH || join(projectRoot, 'config', 'vendors.json'),
   relaysPath: OPERATOR_CONFIG_PATHS.relaysPath,
   modelsPath: OPERATOR_CONFIG_PATHS.modelsPath,
+  registryPath: CONFIG_REGISTRY_PATH,
+  sqliteSnapshotLoader: SQLITE_CONFIG_STORE
+    ? () => SQLITE_CONFIG_STORE.snapshot()
+    : null,
 });
 let RUNTIME_CONFIG = RUNTIME_CONFIG_LOADER.load();
 let VENDORS = RUNTIME_CONFIG.VENDORS;
@@ -1302,6 +1345,7 @@ function buildStatusPayload() {
     runtime_config: {
       ...RUNTIME_GENERATION.status(),
       watcher: RUNTIME_CONFIG_WATCHER.status(),
+      config_backend: RUNTIME_CONFIG.configBackend,
     },
     quota_infer_counts: { ...quotaInferCounts },
     quota_infer_events: [...quotaInferEvents],
