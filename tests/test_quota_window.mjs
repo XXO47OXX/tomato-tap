@@ -30,6 +30,10 @@ function deployments() {
   assert.equal(manager.weightMultiplier('plain', 1_000), 1);
   assert.equal(manager.canDispatch('open', 1_000), true);
   assert.equal(manager.canDispatch('closed', 1_000), false);
+  assert.deepEqual(manager.status('plain', 1_000), {
+    deploymentId: 'plain', managed: false, state: 'open', closedKind: '',
+  });
+  assert.equal(manager.status('closed', 1_000).closedKind, 'state');
 
   const [claim] = manager.claimDueProbes(1_000, 4);
   assert.equal(claim.deploymentId, 'closed');
@@ -99,6 +103,7 @@ function deployments() {
   const known = manager.snapshot().find((entry) => entry.deploymentId === 'open');
   assert.equal(known.state, 'closed');
   assert.equal(known.closedReason, 'known');
+  assert.equal(known.closedKind, 'quota');
   assert.equal(known.nextProbeAt, 22_200);
 
   assert.deepEqual(manager.claimDueProbes(22_199, 1), []);
@@ -116,7 +121,23 @@ function deployments() {
   assert.equal(failed.state, 'closed');
   assert.equal(failed.nextProbeAt, 322_300);
   assert.equal(failed.lastProbeStatus, 403);
+  assert.equal(failed.closedKind, 'quota');
   assert.equal(failed.consecutiveProbeFailures, 1);
+
+  const networkClaim = manager.claimDueProbes(322_300, 1)[0];
+  assert.equal(networkClaim.deploymentId, 'open');
+  assert.equal(manager.recordProbeResult({
+    deploymentId: 'open',
+    claimToken: networkClaim.claimToken,
+    valid: false,
+    status: 0,
+    quotaSignal: null,
+    observedAt: 322_400,
+  }), true);
+  const networkFailed = manager.snapshot().find((entry) => entry.deploymentId === 'open');
+  assert.equal(networkFailed.closedReason, 'probe_failed');
+  assert.equal(networkFailed.closedKind, 'quota');
+  assert.equal(networkFailed.nextProbeAt, 622_400);
 
   assert.equal(manager.recordProbeResult({
     deploymentId: 'open',

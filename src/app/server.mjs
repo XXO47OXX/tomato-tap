@@ -54,6 +54,7 @@ import {
   validateLogicalClientRequest,
 } from '../gateway/request-body.mjs';
 import { createOrdinaryDispatcher } from '../routing/ordinary-dispatch.mjs';
+import { ordinaryCandidateAdmitted } from '../routing/ordinary-fallback-policy.mjs';
 import { createLogicalDeploymentRegistry } from '../routing/logical-deployments.mjs';
 import { createTimeRouteScheduler } from '../routing/time-route-scheduler.mjs';
 import {
@@ -76,6 +77,8 @@ import {
   ensureOperatorConfigFiles,
 } from '../admin/operator-config-store.mjs';
 import { createAdminConsole } from '../admin/admin-console.mjs';
+import { createCursorAcpBridge } from '../providers/adapters/cursor-acp-bridge.mjs';
+import { appendCursorAcpDeployment } from '../providers/adapters/cursor-acp-deployment.mjs';
 
 process.umask(0o077);
 
@@ -312,7 +315,34 @@ try {
 }
 const MODEL_INFLIGHT = new Map();
 
-let KEY_POOL = buildKeyPool(RUNTIME_CONFIG);
+const CURSOR_ACP_SETTINGS = Object.freeze({
+  enabled: parseBoolean(
+    process.env.TOMATO_TAP_CURSOR_ACP_ENABLED,
+    'TOMATO_TAP_CURSOR_ACP_ENABLED',
+    { defaultValue: false },
+  ),
+  host: process.env.TOMATO_TAP_CURSOR_ACP_BIND_HOST || '127.0.0.1',
+  port: positiveInteger(process.env.TOMATO_TAP_CURSOR_ACP_PORT, 8891),
+  command: process.env.TOMATO_TAP_CURSOR_ACP_COMMAND || 'cursor-agent',
+  apiKey: process.env.TOMATO_TAP_CURSOR_ACP_API_KEY
+    || decodeOptionalBase64(process.env.TOMATO_TAP_CURSOR_ACP_API_KEY_B64),
+  cwd: process.env.TOMATO_TAP_CURSOR_ACP_CWD || projectRoot,
+  model: process.env.TOMATO_TAP_CURSOR_ACP_MODEL || '',
+  maxConcurrent: positiveInteger(process.env.TOMATO_TAP_CURSOR_ACP_MAX_CONCURRENT, 1),
+  timeoutMs: parseDuration(
+    process.env.TOMATO_TAP_CURSOR_ACP_TIMEOUT || '10m',
+    'TOMATO_TAP_CURSOR_ACP_TIMEOUT',
+    { minMs: 1_000 },
+  ),
+});
+const CURSOR_ACP_BRIDGE = createCursorAcpBridge({ ...CURSOR_ACP_SETTINGS, logger: console });
+if (CURSOR_ACP_BRIDGE.enabled) await CURSOR_ACP_BRIDGE.listen();
+
+function buildRuntimeKeyPool(config) {
+  return appendCursorAcpDeployment(buildKeyPool(config), CURSOR_ACP_SETTINGS);
+}
+
+let KEY_POOL = buildRuntimeKeyPool(RUNTIME_CONFIG);
 
 const QUOTA_STATE_PATH = process.env.TOMATO_TAP_QUOTA_STATE_PATH
   || join(RUNTIME_STATE_DIR, 'quota-windows.json');
@@ -558,8 +588,12 @@ function runtimeKeyIdentity(key) {
     key.proxyUrl,
     key.proxyMode,
     [...(key.apiFormats || [])].sort().join(','),
+    key.authType || '',
     JSON.stringify(key.requestPolicy || null),
     JSON.stringify(key.rateLimitPolicy || null),
+    key.fallbackAdmission || 'always',
+    key.quotaSignalProfile || '',
+    JSON.stringify(key.quotaPolicy || null),
     [...(key.canonicalModelSet || [])].map(String).sort().join(','),
     [...(key.upstreamModelSet || [])].map(String).sort().join(','),
     JSON.stringify([...(key.modelAliases || [])].sort()),
@@ -693,7 +727,7 @@ if (CANDIDATE_QUALIFICATIONS.reconcile(
 let PENDING_STICKY_RUNTIME = null;
 
 async function prepareRuntimeConfig(candidate) {
-  const keyPool = buildKeyPool(candidate);
+  const keyPool = buildRuntimeKeyPool(candidate);
   const stickyRuntime = await initializeStickyProxyRuntime({
     keys: keyPool,
     ...stickyRuntimeOptions(candidate.env),
@@ -866,6 +900,7 @@ function pickKeyAndAcquire(excluded, vendor, requestedModel, format) {
     if (vendor && k.vendor !== vendor) continue;
     if (format && k.apiFormats instanceof Set && !k.apiFormats.has(format)) continue;
     if (requestedModel && k.modelSet && !k.modelSet.has(requestedModel)) continue;
+    if (!ordinaryKeyAdmissionAllowed(k, vendor, requestedModel, format, now)) continue;
     if (!keyRuntimeAvailable(k)) continue;
     if (!quotaCanDispatch(k.deploymentId, now)) continue;
     const st = KEY_STATE[idx];
@@ -922,8 +957,11 @@ function pickKeyAndAcquire(excluded, vendor, requestedModel, format) {
     host: k.host,
     vendor: k.vendor,
     quotaPolicy: k.quotaPolicy || null,
+    quotaSignalProfile: k.quotaSignalProfile || '',
+    fallbackAdmission: k.fallbackAdmission || 'always',
     modelAliases: k.modelAliases || null,
     apiFormats: k.apiFormats || null,
+    authType: k.authType || null,
     requestPolicy: k.requestPolicy || null,
     pathPrefix: k.pathPrefix || '',
     proto: k.proto || 'https',
@@ -932,6 +970,17 @@ function pickKeyAndAcquire(excluded, vendor, requestedModel, format) {
     proxyUrl: k.proxyUrl || null,
     chatgptAccountId: k.chatgptAccountId || null,
   };
+}
+
+function ordinaryKeyAdmissionAllowed(key, vendor, requestedModel, format, now = Date.now()) {
+  return ordinaryCandidateAdmitted({
+    candidate: key,
+    keyPool: KEY_POOL,
+    vendor,
+    requestedModel,
+    format,
+    quotaStatus: (deploymentId) => QUOTA_MANAGER.status(deploymentId, now),
+  });
 }
 
 // Direct bridges bypass local admission caps but retain upstream cooldowns.
@@ -1013,6 +1062,7 @@ function keyPoolStatus() {
     keys: KEY_POOL,
     states: KEY_STATE,
     stickyRuntime: STICKY_PROXY_RUNTIME,
+    quotaStatus: (deploymentId, now) => QUOTA_MANAGER.status(deploymentId, now),
     exposeUpstreamHosts: EXPOSE_UPSTREAM_HOSTS,
   });
 }
@@ -1214,6 +1264,16 @@ const ORDINARY_DISPATCH = createOrdinaryDispatcher({
   pickKeyAndAcquire,
   keyRuntimeAvailable,
   quotaCanDispatch,
+  candidateAdmissionAllowed: (candidate, vendor, requestedModel, format, now) => (
+    ordinaryCandidateAdmitted({
+      candidate,
+      keyPool: KEY_POOL,
+      vendor,
+      requestedModel,
+      format,
+      quotaStatus: (deploymentId) => QUOTA_MANAGER.status(deploymentId, now),
+    })
+  ),
   rateLimitCanDispatch: (key, state, now) => keyRateLimitStatus(key, state, now).allowed,
   keyPoolStatus,
   pickHeaders,
@@ -1322,6 +1382,7 @@ function buildStatusPayload() {
       explicit: STATE_LAYOUT.explicit,
     },
     sample_logging: SAMPLE_LOGGER.status(),
+    cursor_acp: CURSOR_ACP_BRIDGE.snapshot(),
     by_model: budget.by_model,
     key_pool: keyPoolStatus(),
     quota_windows: QUOTA_MANAGER.snapshot(),
@@ -1471,6 +1532,10 @@ server.listen(PORT, BIND_HOST, () => {
   console.log(`  health   -> http://${BIND_HOST}:${PORT}/healthz  readiness=/readyz`);
   console.log(`  explain  -> http://${BIND_HOST}:${PORT}/__route/plan?model=balanced`);
   console.log(`  console  -> http://${BIND_HOST}:${PORT}/admin/`);
+  if (CURSOR_ACP_BRIDGE.enabled) {
+    const address = CURSOR_ACP_BRIDGE.address();
+    console.log(`  cursor   -> http://${address.host}:${address.port}/v1 (model=cursor-agent)`);
+  }
   console.log(`  window    UTC ${WINDOW_START_UTC_HOUR}:00-${WINDOW_END_UTC_HOUR}:00 | mult=${OFFPEAK_MULT}`);
   console.log(`  budget    ${budget.used}/${budget.total} credits   in_window=${inWindow()}`);
   console.log(`  retry     max_attempts=${MAX_RETRIES + 1}  backoff_ms=[${RETRY_BACKOFF_MS.join(',')}]  retryable=[${[...RETRYABLE_STATUSES].sort((a,b)=>a-b).join(',')}]`);
@@ -1507,6 +1572,7 @@ function shutdown(signal) {
     await USAGE_LEDGER.close();
     await QUOTA_CONTROL_SERVER.close();
     await STICKY_PROXY_RUNTIME.stopAll();
+    await CURSOR_ACP_BRIDGE.close();
     process.exit(0);
   });
   server.closeIdleConnections?.();
@@ -1517,6 +1583,7 @@ function shutdown(signal) {
     USAGE_LEDGER.close()
       .then(() => QUOTA_CONTROL_SERVER.close())
       .then(() => STICKY_PROXY_RUNTIME.stopAll())
+      .then(() => CURSOR_ACP_BRIDGE.close())
       .finally(() => process.exit(1));
   }, GATEWAY_LIMITS.shutdownGraceTimeoutMs).unref();
 }
@@ -1526,4 +1593,23 @@ process.once('SIGINT', () => shutdown('SIGINT'));
 function get401CooldownMs(vendor) {
   const override = VENDORS[vendor]?.auth401CooldownMs;
   return Number.isFinite(override) && override >= 0 ? override : KEY_401_COOLDOWN_MS;
+}
+
+function positiveInteger(value, fallback) {
+  if (value == null || value === '') return fallback;
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 1) {
+    throw new Error(`expected a positive integer, got ${value}`);
+  }
+  return number;
+}
+
+function decodeOptionalBase64(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  try {
+    return Buffer.from(raw, 'base64').toString('utf8').trim() || raw;
+  } catch {
+    return raw;
+  }
 }

@@ -48,6 +48,7 @@ export function createQuotaWindowManager({
         claims.delete(window.deploymentId);
         window.state = 'closed';
         window.closedReason = 'probe_lease_expired';
+        if (window.closedKind !== 'quota') window.closedKind = 'probe_failure';
         window.closedAt = at;
         window.nextProbeAt = at;
         window.consecutiveProbeFailures++;
@@ -61,6 +62,14 @@ export function createQuotaWindowManager({
     if (!policies.has(deploymentId)) return true;
     advance(at);
     return DISPATCHABLE.has(windows.get(deploymentId).state);
+  }
+
+  function status(deploymentId, at = Date.now()) {
+    if (!policies.has(deploymentId)) {
+      return { deploymentId, managed: false, state: 'open', closedKind: '' };
+    }
+    advance(at);
+    return { ...windows.get(deploymentId), managed: true };
   }
 
   function weightMultiplier(deploymentId, at = Date.now()) {
@@ -120,6 +129,7 @@ export function createQuotaWindowManager({
       Object.assign(window, {
         state: 'boosted',
         closedReason: '',
+        closedKind: '',
         closedAt: 0,
         nextProbeAt: 0,
         openedAt: observedAt,
@@ -131,6 +141,9 @@ export function createQuotaWindowManager({
     Object.assign(window, {
       state: 'closed',
       closedReason: quotaSignal?.label || 'probe_failed',
+      closedKind: quotaSignal?.matched === true || window.closedKind === 'quota'
+        ? 'quota'
+        : 'probe_failure',
       closedAt: observedAt,
       nextProbeAt: nextProbeTime(policy, quotaSignal, observedAt),
       openedAt: 0,
@@ -152,6 +165,7 @@ export function createQuotaWindowManager({
     Object.assign(window, {
       state: 'closed',
       closedReason: quotaSignal.label || 'quota_exhausted',
+      closedKind: 'quota',
       closedAt: observedAt,
       nextProbeAt: nextProbeTime(policy, quotaSignal, observedAt),
       openedAt: 0,
@@ -168,6 +182,7 @@ export function createQuotaWindowManager({
 
   return {
     canDispatch,
+    status,
     weightMultiplier,
     claimDueProbes,
     recordProbeResult,
@@ -191,6 +206,7 @@ function openWindow(deploymentId) {
     deploymentId,
     state: 'open',
     closedReason: '',
+    closedKind: '',
     closedAt: 0,
     nextProbeAt: 0,
     openedAt: 0,
@@ -205,6 +221,7 @@ function closedWindow(deploymentId, closedReason, closedAt, nextProbeAt) {
     ...openWindow(deploymentId),
     state: 'closed',
     closedReason,
+    closedKind: 'state',
     closedAt,
     nextProbeAt,
   };
@@ -218,6 +235,7 @@ function normalizeWindow(deploymentId, saved, now) {
     deploymentId,
     state: state === 'half_open' ? 'closed' : state,
     closedReason: String(saved.closedReason || ''),
+    closedKind: normalizeClosedKind(saved.closedKind, saved.closedReason),
     closedAt: finiteNumber(saved.closedAt),
     nextProbeAt: state === 'half_open' ? now : finiteNumber(saved.nextProbeAt),
     openedAt: finiteNumber(saved.openedAt),
@@ -225,6 +243,18 @@ function normalizeWindow(deploymentId, saved, now) {
     lastProbeStatus: finiteNumber(saved.lastProbeStatus),
     consecutiveProbeFailures: finiteNumber(saved.consecutiveProbeFailures),
   };
+}
+
+function normalizeClosedKind(value, reason) {
+  if (['', 'quota', 'probe_failure', 'state'].includes(value)) return value;
+  const normalizedReason = String(reason || '').toLowerCase();
+  if (normalizedReason.includes('quota')
+      || normalizedReason.includes('usage')
+      || normalizedReason.includes('billing-cycle')
+      || normalizedReason.includes('5h-window')
+      || normalizedReason.includes('exhaust')) return 'quota';
+  if (normalizedReason.includes('probe')) return 'probe_failure';
+  return normalizedReason ? 'state' : '';
 }
 
 function finiteNumber(value) {

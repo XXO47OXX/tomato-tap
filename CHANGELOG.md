@@ -3,6 +3,23 @@
 All notable changes are documented here. The format follows Keep a Changelog;
 versions follow Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+
+- Shareable model-route browser state with provider, Key, and egress lanes.
+- Optional loopback-only Cursor ACP text bridge with bounded concurrency,
+  streaming responses, and child-process cleanup.
+- Quota-only fallback admission for lower-weight ordinary deployments.
+- Clash flow-style, Shadowsocks, and SOCKS proxy subscription parsing.
+
+### Fixed
+
+- Quota probes now preserve deployment authentication and fixed egress policy.
+- Probe transport disconnects no longer terminate the quota control server.
+- Quota exhaustion remains distinguishable from transient probe failure, so
+  reserved capacity is not released for the wrong reason.
+
 ## [0.3.0] - 2026-09-01
 
 ### Added

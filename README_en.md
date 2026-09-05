@@ -118,6 +118,33 @@ downstream request
 
 A later layer overrides only fields it explicitly owns; other request content is preserved.
 
+### Reserve a quota-only fallback key
+
+An ordinary real-model route can hold a lower-weight deployment in reserve until higher tiers have exhausted quota:
+
+```json
+{
+  "weight": 1,
+  "fallbackAdmission": "higher_weight_quota_closed",
+  "quotaSignalProfile": "kimi-coding"
+}
+```
+
+When higher-weight deployments support the same model, the backup is admitted only after all of them are closed by recognized quota signals. Short rate limits, network failures, 5xx responses, authentication failures, and probe failures do not spend the reserve early. If no higher tier supports a requested model, the same deployment remains a normal primary.
+
+### Optional Cursor ACP bridge
+
+A Cursor API key authenticates `cursor-agent`; it is not a generic model API key. Tomato Tap can expose it as a standalone, text-only, loopback-only OpenAI Chat Completions upstream:
+
+```dotenv
+TOMATO_TAP_CURSOR_ACP_ENABLED=true
+TOMATO_TAP_CURSOR_ACP_API_KEY=<cursor-api-key>
+TOMATO_TAP_CURSOR_ACP_CWD=/path/to/workspace
+TOMATO_TAP_CURSOR_ACP_MAX_CONCURRENT=1
+```
+
+After installing Cursor CLI, send `POST /cursor/v1/chat/completions` with model `cursor-agent`. The bridge creates one ACP session per request, returns text only, and rejects file, terminal, MCP, and tool operations. Its listener is restricted to loopback. `GET http://127.0.0.1:8891/health` checks it without spending model quota.
+
 ## Configuration and data boundary
 
 | Data | Default location | Commit? |

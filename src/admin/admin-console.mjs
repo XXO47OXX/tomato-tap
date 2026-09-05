@@ -10,6 +10,7 @@ const WEB_ROOT = join(dirname(fileURLToPath(import.meta.url)), 'web');
 const STATIC_FILES = Object.freeze({
   '/admin/assets/app.css': ['app.css', 'text/css; charset=utf-8'],
   '/admin/assets/app.js': ['app.js', 'text/javascript; charset=utf-8'],
+  '/admin/assets/route-state.js': ['route-state.js', 'text/javascript; charset=utf-8'],
   '/admin/assets/api.js': ['api.js', 'text/javascript; charset=utf-8'],
   '/admin/assets/ui.js': ['ui.js', 'text/javascript; charset=utf-8'],
   '/admin/assets/views.js': ['views.js', 'text/javascript; charset=utf-8'],

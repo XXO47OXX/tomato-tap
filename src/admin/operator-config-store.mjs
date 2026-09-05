@@ -509,6 +509,10 @@ function providerSummary(id, relay, fileEnv, processEnvOverrides, localSource = 
       max: relay.cap?.max || 4,
     },
     rateLimit: relay.rateLimit || null,
+    weight: Number(relay.weight || 1),
+    fallbackAdmission: relay.fallbackAdmission || 'always',
+    quotaSignalProfile: relay.quotaSignalProfile || '',
+    quota: relay.quota || null,
     proxy: fixedProxyConfigured ? { mode: 'fixed-http' } : relay.proxy ?? false,
     fixedProxy: {
       configured: fixedProxyConfigured,

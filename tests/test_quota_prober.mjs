@@ -1,6 +1,21 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { createQuotaProber, PROBE_TICK_MS } from '../src/providers/quota/quota-prober.mjs';
+import net from 'node:net';
+import {
+  buildProbeHeaders,
+  createQuotaProber,
+  PROBE_TICK_MS,
+} from '../src/providers/quota/quota-prober.mjs';
+
+assert.equal(buildProbeHeaders({
+  value: 'bearer-value', authType: 'bearer', headers: { 'x-client-type': 'cli' },
+}, { anthropic: true, bodyLength: 12 }).authorization, 'Bearer bearer-value');
+assert.equal(buildProbeHeaders({
+  value: 'x-api-value', authType: 'x-api-key',
+}, { anthropic: true, bodyLength: 12 })['x-api-key'], 'x-api-value');
+assert.throws(() => buildProbeHeaders({
+  value: 'bad', authType: 'basic',
+}, { anthropic: false, bodyLength: 1 }), /unsupported probe auth policy/);
 
 let mode = 'valid';
 let upstreamCalls = 0;
@@ -191,4 +206,91 @@ assert.equal(expiredReports[0].valid, false);
 assert.equal(expiredReports[0].failureClass, 'expired');
 
 await new Promise((resolve) => upstream.close(resolve));
+
+let anthropicCalls = 0;
+const anthropicUpstream = http.createServer((req, res) => {
+  anthropicCalls++;
+  const chunks = [];
+  req.on('data', (chunk) => chunks.push(chunk));
+  req.on('end', () => {
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    assert.equal(req.url, '/coding/v1/messages');
+    assert.equal(req.headers['x-api-key'], undefined);
+    assert.equal(req.headers['anthropic-version'], '2023-06-01');
+    assert.equal(req.headers.authorization, 'Bearer secret-anthropic');
+    assert.equal(body.model, 'k3-256k');
+    assert.equal(body.reasoning_effort, 'low');
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({
+      id: 'msg_1', type: 'message', role: 'assistant',
+      content: [{ type: 'text', text: '{"ok":true}' }],
+    }));
+  });
+});
+await new Promise((resolve) => anthropicUpstream.listen(0, '127.0.0.1', resolve));
+const anthropicPort = anthropicUpstream.address().port;
+
+let proxyConnects = 0;
+const proxySockets = new Set();
+const fixedProxy = http.createServer();
+fixedProxy.on('connection', (socket) => {
+  proxySockets.add(socket);
+  socket.once('close', () => proxySockets.delete(socket));
+});
+fixedProxy.on('connect', (req, clientSocket, head) => {
+  proxyConnects++;
+  const separator = req.url.lastIndexOf(':');
+  const host = req.url.slice(0, separator);
+  const targetPort = Number(req.url.slice(separator + 1));
+  const targetSocket = net.connect(targetPort, host, () => {
+    clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+    if (head.length > 0) targetSocket.write(head);
+    targetSocket.pipe(clientSocket);
+    clientSocket.pipe(targetSocket);
+  });
+  targetSocket.once('error', () => clientSocket.destroy());
+});
+await new Promise((resolve) => fixedProxy.listen(0, '127.0.0.1', resolve));
+const fixedProxyPort = fixedProxy.address().port;
+
+const anthropicReports = [];
+const anthropicProber = createQuotaProber({
+  controlClient: {
+    async request(message) {
+      if (message.method === 'claim_due') {
+        return { ok: true, claims: [{
+          deploymentId: 'anthropic-example', claimToken: 'claim',
+          probeModel: 'k3-256k', probeMaxTokens: 32,
+        }] };
+      }
+      anthropicReports.push(message);
+      return { ok: true, accepted: true };
+    },
+  },
+  deployments: new Map([['anthropic-example', {
+    deploymentId: 'anthropic-example',
+    name: 'tomato_tap_relay_anthropic_example',
+    value: 'secret-anthropic',
+    host: '127.0.0.1',
+    pathPrefix: '/coding',
+    proto: 'http',
+    port: anthropicPort,
+    proxyUrl: `http://127.0.0.1:${fixedProxyPort}`,
+    apiFormats: new Set(['anthropic', 'openai']),
+    authType: 'bearer',
+    quotaSignalProfile: 'kimi-coding',
+    thinkingAdapter: 'none',
+  }]]),
+  timeoutMs: 1000,
+  logger: () => {},
+});
+await anthropicProber.tick();
+assert.equal(anthropicCalls, 1);
+assert.equal(proxyConnects, 1);
+assert.equal(anthropicReports[0].valid, true);
+assert.equal(anthropicReports[0].status, 200);
+for (const socket of proxySockets) socket.destroy();
+await new Promise((resolve) => fixedProxy.close(resolve));
+await new Promise((resolve) => anthropicUpstream.close(resolve));
+
 console.log('All quota-prober tests passed.');

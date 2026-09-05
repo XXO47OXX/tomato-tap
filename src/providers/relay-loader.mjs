@@ -7,6 +7,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { normalizeRequestPolicy as normalizeSharedRequestPolicy } from '../routing/request-policy.mjs';
+import { normalizeFallbackAdmission } from '../routing/ordinary-fallback-policy.mjs';
 
 const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const DEFAULT_PATH = join(PROJECT_ROOT, 'config', 'relays.json');
@@ -96,6 +97,8 @@ export function discoverRelayKeys(vendorName, envPrefix, env = process.env, regi
       proxyUrl: fixedProxyUrl,
       proxyMode: fixedProxyUrl ? 'fixed-http' : undefined,
       baseWeight: meta.baseWeight,
+      fallbackAdmission: meta.fallbackAdmission,
+      quotaSignalProfile: meta.quotaSignalProfile,
       quotaPolicy: meta.quotaPolicy,
       expiresAtMs: meta.expiresAtMs,
     });
@@ -156,6 +159,8 @@ function compileRelay(slug, cfg) {
       useProxy: proxyPolicy.mode === 'shared',
       proxyPolicy,
       baseWeight: normalizeWeight(slug, cfg.weight),
+      fallbackAdmission: normalizeFallbackAdmission(cfg.fallbackAdmission),
+      quotaSignalProfile: normalizeSignalProfile(slug, cfg.quotaSignalProfile),
       quotaPolicy: normalizeQuotaPolicy(slug, cfg.quota),
       expiresAtMs: normalizeExpiresAt(slug, cfg.expiresAt),
     };
@@ -185,6 +190,8 @@ function compileRelay(slug, cfg) {
     useProxy: proxyPolicy.mode === 'shared',
     proxyPolicy,
     baseWeight: normalizeWeight(slug, cfg.weight),
+    fallbackAdmission: normalizeFallbackAdmission(cfg.fallbackAdmission),
+    quotaSignalProfile: normalizeSignalProfile(slug, cfg.quotaSignalProfile),
     quotaPolicy: normalizeQuotaPolicy(slug, cfg.quota),
     expiresAtMs: normalizeExpiresAt(slug, cfg.expiresAt),
   };
@@ -416,6 +423,15 @@ function normalizeWeight(slug, weight) {
     throw new Error(`relay-loader: relay "${slug}" weight must be a positive number`);
   }
   return value;
+}
+
+function normalizeSignalProfile(slug, value) {
+  if (value == null || value === '') return '';
+  const normalized = String(value).trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(normalized)) {
+    throw new Error(`relay-loader: relay "${slug}" quotaSignalProfile is invalid`);
+  }
+  return normalized;
 }
 
 export function normalizeQuotaPolicy(slug, value) {

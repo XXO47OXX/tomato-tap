@@ -128,6 +128,7 @@ export function egressView(data, { embedded = false } = {}) {
       ${egressSourceCard('静态节点', egress.staticNodes, egress.staticNodes?.configured ? '已写入本地' : '未配置')}
       ${egressSourceCard('共享 HTTP 代理', egress.sharedProxy, egress.sharedProxy?.fallback ? '使用 HTTPS_PROXY' : egress.sharedProxy?.configured ? '已配置' : '未配置')}
     </section>
+    ${fixedEgressView(egress, data.status?.logical_proxy?.profile_runtime?.profiles || [])}
     <section class="section panel panel-pad">
       <div class="panel-title"><div><h3>代理源设置</h3><p>留空保持现值；订阅和节点立即生效，共享 HTTP 代理重启后生效</p></div>${badge('保存后不再展示', 'info')}</div>
       <form id="egress-form" class="field-grid">
@@ -353,7 +354,7 @@ export function settingsView(data) {
           <option value="debug" ${selected(settings.TOMATO_TAP_ADMIN_DETAIL_LEVEL, 'debug')}>调试：再显示响应片段</option>
         </select><small>对访问本实例控制台的所有管理员生效，不是个人偏好。完整 API Key 在任何级别都不会返回浏览器。</small></label>
         <label class="field"><span>允许状态接口显示上游 host</span><select name="TOMATO_TAP_EXPOSE_UPSTREAM_HOSTS"><option value="false" ${selected(settings.TOMATO_TAP_EXPOSE_UPSTREAM_HOSTS || 'false', 'false')}>关闭</option><option value="true" ${selected(settings.TOMATO_TAP_EXPOSE_UPSTREAM_HOSTS, 'true')}>开启</option></select><small>运维或调试级别下仍需开启此项才能看到 Key 对应 host。</small></label>
-        ${settingField('TOMATO_TAP_DEFAULT_USER_AGENT', '缺失 UA 的回退值', settings, '留空则不添加')}
+        ${settingField('TOMATO_TAP_DEFAULT_USER_AGENT', '缺失 UA 的回退值', settings, '默认 opencode/1.14.28 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.13')}
         <label class="field"><span>记录原始样本</span><select name="TOMATO_TAP_SAMPLES_ENABLED"><option value="false" ${selected(settings.TOMATO_TAP_SAMPLES_ENABLED, 'false')}>关闭（推荐）</option><option value="true" ${selected(settings.TOMATO_TAP_SAMPLES_ENABLED, 'true')}>开启</option></select><small>当前：${sample.enabled ? '已开启' : '已关闭'}。样本可能含提示词与响应。</small></label>
         ${settingField('TOMATO_TAP_SAMPLES_RETENTION', '样本保留时间', settings, '24h')}
         ${settingField('TOMATO_TAP_SAMPLES_MAX_SIZE', '样本最大空间', settings, '512MiB')}
@@ -452,7 +453,7 @@ function providerFields(provider, setup, realModels = [], isNew = false) {
     </div></fieldset>
     <fieldset class="form-section"><legend><span><b>模型与请求</b></span></legend><div class="field-grid">
       ${modelPickerField({ name: 'models', values: provider?.models || [], catalog: modelCatalog, label: '模型列表', discover: true })}
-      <label class="field full"><span>User-Agent</span><input name="userAgent" value="${escapeHtml(provider?.userAgent || '')}" placeholder="留空：原样透传下游 User-Agent"><small>只有明确填写才覆盖；适配器必须使用固定 UA 时会由协议层显式处理。</small></label>
+      <label class="field full"><span>User-Agent</span><input name="userAgent" value="${escapeHtml(provider?.userAgent || '')}" placeholder="留空：优先透传下游 User-Agent"><small>只有明确填写才覆盖；下游也未提供时使用实例级回退值，适配器必须使用固定 UA 时由协议层显式处理。</small></label>
       <label class="field"><span>逻辑模型</span><input name="logicalModel" value="${setup ? 'balanced' : ''}" placeholder="可选，例如 balanced"><small>填写后会把 OpenAI 格式模型加入该逻辑入口；仅支持 Anthropic 的上游不会加入。</small></label>
       <label class="field"><span>思考适配</span><select name="thinkingAdapter"><option value="none" ${selected(provider?.thinkingAdapter, 'none')}>不改写</option><option value="glm_disabled" ${selected(provider?.thinkingAdapter, 'glm_disabled')}>关闭 GLM 思考</option><option value="deepseek_disabled" ${selected(provider?.thinkingAdapter, 'deepseek_disabled')}>关闭 DeepSeek 思考</option><option value="longcat_disabled" ${selected(provider?.thinkingAdapter, 'longcat_disabled')}>关闭 LongCat 思考</option><option value="kimi_low" ${selected(provider?.thinkingAdapter, 'kimi_low')}>Kimi low</option><option value="minimax_split" ${selected(provider?.thinkingAdapter, 'minimax_split')}>MiniMax reasoning split</option></select></label>
     </div></fieldset>
@@ -504,6 +505,65 @@ function modelPickerField({
 function egressSourceCard(title, source = {}, detail) {
   const configured = source?.configured === true;
   return `<article class="panel egress-source-card"><span class="square-lamp ${configured ? 'ok' : 'idle'}"></span><div><h3>${escapeHtml(title)}</h3><small>${escapeHtml(detail)}</small></div>${badge(configured ? `已配置 · ${settingSourceName(source.source)}` : '未配置', configured ? 'ok' : 'warn')}</article>`;
+}
+
+function fixedEgressView(egress = {}, runtimeProfiles = []) {
+  const backends = Array.isArray(egress.fixedBackends) ? egress.fixedBackends : [];
+  const profiles = Array.isArray(egress.proxyProfiles) ? egress.proxyProfiles : [];
+  if (!backends.length && !profiles.length) return '';
+  return `<section class="section egress-routing-grid">
+    <div class="panel egress-route-panel">
+      <div class="panel-title"><div><h3>固定出口</h3><p>节点只在明确绑定或固定出口组中使用，不会自动改写 Key 的代理策略。</p></div>${badge(`${fmt(backends.length)} 个`, backends.length ? 'info' : 'warn')}</div>
+      ${fixedBackendTable(backends, profiles, runtimeProfiles)}
+    </div>
+    <div class="panel egress-route-panel">
+      <div class="panel-title"><div><h3>出口组</h3><p>按权重选择；主节点失败后才进入备用节点。</p></div>${badge(`${fmt(profiles.length)} 个`, profiles.length ? 'info' : 'warn')}</div>
+      ${proxyProfileTable(profiles, backends, runtimeProfiles)}
+    </div>
+  </section>`;
+}
+
+function fixedBackendTable(backends, profiles, runtimeProfiles) {
+  if (!backends.length) return '<div class="quiet-state compact"><span class="square-lamp idle"></span><div><b>暂无固定出口</b><small>固定 HTTP 代理加入后会显示在这里。</small></div></div>';
+  const runtimeBackends = runtimeProfiles.flatMap((profile) => profile.backends || []);
+  const rows = backends.map((backend) => {
+    const runtime = runtimeBackends.find((item) => item.label === backend.label);
+    const state = fixedBackendState(backend, runtime);
+    const roles = (backend.profileRefs || []).map((ref) => `${ref.profileId} · ${ref.role === 'primary' ? '主节点' : '备用'}`);
+    const endpoint = backend.host && backend.port ? `${backend.host}:${backend.port}` : '地址不可用';
+    return `<tr><td><div class="entity-title"><span class="square-lamp ${state.lamp}"></span><div><b>${escapeHtml(backend.label || backend.id)}</b><small class="row-sub">${escapeHtml(state.label)}</small></div></div></td><td class="mono">${escapeHtml(endpoint)}</td><td>${roles.map((role) => `<span class="route-role">${escapeHtml(role)}</span>`).join('') || '<span class="muted">未分配</span>'}</td><td class="num mono">${formatWeight(backend.weight)}</td><td class="num mono">${fmt(backend.credentialBindings || 0)}</td><td>${runtime ? `<span class="state-text ${runtime.failures && !runtime.successes ? 'bad' : 'ok'}">${fmt(runtime.successes || 0)} 成功 · ${fmt(runtime.failures || 0)} 失败</span>` : '<span class="muted">等待请求</span>'}</td></tr>`;
+  }).join('');
+  return `<div class="table-wrap egress-table-wrap"><table><thead><tr><th>状态 / 节点</th><th>地址</th><th>出口组角色</th><th class="num">权重</th><th class="num">绑定 Key</th><th>运行记录</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+function proxyProfileTable(profiles, backends, runtimeProfiles) {
+  if (!profiles.length) return '<div class="quiet-state compact"><span class="square-lamp idle"></span><div><b>暂无出口组</b><small>当前没有配置固定出口组。</small></div></div>';
+  const byId = new Map(backends.map((backend) => [backend.id, backend]));
+  const rows = profiles.map((profile) => {
+    const route = profile.backendIds.map((id) => {
+      const backend = byId.get(id);
+      return backend?.label || id;
+    });
+    const runtime = runtimeProfiles.find((item) => item.profile_id === profile.id);
+    const listening = runtime?.listening === true;
+    return `<tr><td><div class="entity-title"><span class="square-lamp ${profile.enabled && listening ? 'ok' : profile.enabled ? 'warn' : 'off'}"></span><div><b class="mono">${escapeHtml(profile.id)}</b><small class="row-sub">${escapeHtml(profile.backendKind === 'fixed' ? '固定出口组' : '动态代理池')}</small></div></div></td><td><div class="egress-route-line">${route.map((item, index) => `${index ? '<i>→</i>' : ''}<span>${escapeHtml(item)}</span>`).join('') || '<span class="muted">无节点</span>'}</div></td><td>${escapeHtml(profile.selectionStrategy)}</td><td class="num mono">${fmt(profile.maxAttempts)}</td><td>${listening ? `<span class="state-text ok">监听中 · ${fmt(runtime.total_connections || 0)} 次</span>` : '<span class="state-text warn">未监听</span>'}</td></tr>`;
+  }).join('');
+  return `<div class="table-wrap egress-table-wrap"><table><thead><tr><th>出口组</th><th>分配顺序</th><th>策略</th><th class="num">失败尝试</th><th>监听状态</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+function fixedBackendState(backend, runtime) {
+  if (!backend.profileRefs?.length && !(backend.credentialBindings > 0)) return { lamp: 'idle', label: '已登记，未分配' };
+  if (!runtime) return { lamp: 'idle', label: '等待请求' };
+  if (Number(runtime.cooldown_remaining_ms) > 0) return { lamp: 'warn', label: `冷却 ${formatCountdown(runtime.cooldown_remaining_ms)}` };
+  if (Number(runtime.failures) > 0 && Number(runtime.successes) === 0) return { lamp: 'bad', label: '请求失败' };
+  if (Number(runtime.successes) > 0) return { lamp: 'ok', label: '运行正常' };
+  return { lamp: 'idle', label: '等待请求' };
+}
+
+function formatWeight(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '—';
+  return String(Number(number.toFixed(3)));
 }
 
 function secretSettingHint(source = {}) {

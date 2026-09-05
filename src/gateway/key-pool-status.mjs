@@ -10,6 +10,7 @@ export function buildKeyPoolStatus({
   keys,
   states,
   stickyRuntime,
+  quotaStatus = () => ({ managed: false }),
   exposeUpstreamHosts = false,
   now = Date.now(),
 }) {
@@ -25,6 +26,8 @@ export function buildKeyPoolStatus({
       vendor: key.vendor,
       provider: providerLabelForKey(key),
       base_weight: key.baseWeight || 1,
+      fallback_admission: key.fallbackAdmission || 'always',
+      quota_signal_profile: key.quotaSignalProfile || '',
       inflight: state.inflight,
       cap: state.cap,
       cap_history: state.capHistory.slice(),
@@ -59,6 +62,15 @@ export function buildKeyPoolStatus({
 
     const cooldownReason = activeCooldownReason(state, now);
     if (cooldownReason) entry.cooldown_reason = cooldownReason;
+    const quota = quotaStatus(key.deploymentId, now);
+    if (quota?.managed) {
+      entry.quota = {
+        state: quota.state,
+        closed_kind: quota.closedKind || '',
+        reason: quota.closedReason || '',
+        next_probe_at: quota.nextProbeAt || 0,
+      };
+    }
     if (key.pathPrefix) entry.path_prefix = key.pathPrefix;
     if (key.modelSet) entry.model_set = [...key.modelSet].sort();
     if (key.canonicalModelSet) entry.canonical_models = [...key.canonicalModelSet].sort();

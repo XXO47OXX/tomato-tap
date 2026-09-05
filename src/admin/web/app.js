@@ -38,6 +38,7 @@ import {
   setupView,
   usageView,
 } from './views.js';
+import { buildModelRouteHash, parseAdminHash, readModelRouteState } from './route-state.js';
 
 const state = {
   data: null,
@@ -51,13 +52,16 @@ const state = {
   providerFilters: { query: '', status: 'all', protocol: 'all', egress: 'all' },
   connectionsTab: 'providers',
   diagnosticFocus: { provider: '', model: '', slot: '' },
-  modelRouteFocus: { logical: '', real: '', provider: '' },
+  modelRouteFocus: { logical: '', real: '', vendor: '', provider: '', key: '', egress: '' },
   modelPerspective: 'logical',
   modelRouteQuery: '',
   loading: false,
 };
 
-window.addEventListener('hashchange', render);
+window.addEventListener('hashchange', () => {
+  hydrateModelRouteState();
+  render();
+});
 window.addEventListener('tomato-admin-auth-required', showAuth);
 document.addEventListener('click', handleClick);
 document.addEventListener('submit', handleSubmit);
@@ -65,8 +69,8 @@ document.addEventListener('change', (event) => {
   if (event.target.name === 'apiFormat') syncProtocolFields(event.target.form);
   if (event.target.name === 'proxyMode') syncProxyFields(event.target.form);
   if (event.target.name === 'routeGraphLogical') {
-    state.modelRouteFocus = { logical: event.target.value, real: '', provider: '' };
-    render();
+    state.modelRouteFocus = { logical: event.target.value, real: '', vendor: '', provider: '', key: '', egress: '' };
+    renderModelRoute();
   }
   if (event.target.name === 'diagnosticProvider') {
     state.diagnosticFocus = { provider: event.target.value, model: '', slot: '' };
@@ -105,6 +109,7 @@ document.addEventListener('input', (event) => {
   if (event.target.form?.id === 'logical-form') syncLogicalPreview(event.target.form);
   if (event.target.name === 'routeQuery') {
     state.modelRouteQuery = event.target.value;
+    syncModelRouteUrl();
     renderKeepingFocus('routeQuery', event.target.selectionStart);
   }
   if (event.target.name === 'priceQuery') {
@@ -116,6 +121,7 @@ document.addEventListener('input', (event) => {
     renderKeepingFocus('providerQuery', event.target.selectionStart);
   }
 });
+document.addEventListener('keydown', handleRouteKeydown);
 document.addEventListener('tomato-model-picker-change', (event) => {
   const form = event.target.closest('form');
   if (form?.id === 'logical-form') syncLogicalPreview(form);
@@ -127,6 +133,7 @@ $('#auth-form').addEventListener('submit', async (event) => {
   await refresh(true);
 });
 
+hydrateModelRouteState();
 await refresh(true);
 setInterval(() => refresh(false), 10_000);
 
@@ -257,36 +264,69 @@ async function handleClick(event) {
       return refresh(true);
     }
     if (action === 'route-filter-real') {
-      const active = state.modelRouteFocus.real === target.dataset.id;
+      const active = state.modelRouteFocus.real === target.dataset.id && target.dataset.path !== 'true';
       state.modelRouteFocus = {
         logical: target.dataset.logical,
         real: active ? '' : target.dataset.id,
+        vendor: '',
         provider: '',
+        key: '',
+        egress: '',
       };
-      return render();
+      return renderModelRoute(active ? 'real' : 'provider');
+    }
+    if (action === 'route-filter-vendor') {
+      const active = state.modelRouteFocus.vendor === target.dataset.id;
+      state.modelRouteFocus = {
+        ...state.modelRouteFocus,
+        vendor: active ? '' : target.dataset.id,
+        provider: '',
+        key: '',
+        egress: '',
+      };
+      return renderModelRoute('provider');
     }
     if (action === 'route-filter-provider') {
-      const active = state.modelRouteFocus.provider === target.dataset.id;
+      const active = state.modelRouteFocus.provider === target.dataset.id && target.dataset.path !== 'true';
       state.modelRouteFocus = {
         logical: target.dataset.logical,
         real: target.dataset.real || '',
+        vendor: target.dataset.vendor || state.modelRouteFocus.vendor || '',
         provider: active ? '' : target.dataset.id,
+        key: '',
+        egress: '',
       };
-      return render();
+      return renderModelRoute(active ? 'provider' : 'key');
+    }
+    if (action === 'route-filter-key') {
+      const active = state.modelRouteFocus.key === target.dataset.id;
+      state.modelRouteFocus = {
+        ...state.modelRouteFocus,
+        key: active ? '' : target.dataset.id,
+        egress: '',
+      };
+      return renderModelRoute(active ? 'key' : 'egress');
+    }
+    if (action === 'route-filter-egress') {
+      state.modelRouteFocus = {
+        ...state.modelRouteFocus,
+        egress: state.modelRouteFocus.egress === target.dataset.id ? '' : target.dataset.id,
+      };
+      return renderModelRoute('egress');
     }
     if (action === 'route-filter-reset') {
-      state.modelRouteFocus = { logical: target.dataset.logical, real: '', provider: '' };
-      return render();
+      state.modelRouteFocus = { logical: target.dataset.logical, real: '', vendor: '', provider: '', key: '', egress: '' };
+      return renderModelRoute('logical');
     }
     if (action === 'route-select-logical') {
-      state.modelRouteFocus = { logical: target.dataset.id, real: '', provider: '' };
-      render();
+      state.modelRouteFocus = { logical: target.dataset.id, real: '', vendor: '', provider: '', key: '', egress: '' };
+      renderModelRoute('real');
       if (target.dataset.reveal === 'chain') revealModelChain();
       return;
     }
     if (action === 'route-perspective') {
       state.modelPerspective = target.dataset.perspective || 'logical';
-      return render();
+      return renderModelRoute(state.modelPerspective);
     }
     if (action === 'open-setup') { location.hash = 'setup'; return; }
     if (action === 'close-modal') { closeModal(); return; }
@@ -597,8 +637,74 @@ async function busy(button, operation) {
 }
 
 function currentRoute() {
-  const route = location.hash.replace(/^#\/?/, '').split('?')[0];
+  const { route } = parseAdminHash(location.hash);
   return PAGE_META[route] ? route : 'overview';
+}
+
+function hydrateModelRouteState() {
+  const routeState = readModelRouteState(location.hash);
+  if (routeState.route !== 'models') return;
+  state.modelPerspective = routeState.perspective;
+  state.modelRouteQuery = routeState.query;
+  state.modelRouteFocus = routeState.focus;
+}
+
+function syncModelRouteUrl() {
+  if (currentRoute() !== 'models') return;
+  const hash = buildModelRouteHash({
+    perspective: state.modelPerspective,
+    query: state.modelRouteQuery,
+    focus: state.modelRouteFocus,
+  });
+  if (location.hash !== hash) history.replaceState(null, '', hash);
+}
+
+function renderModelRoute(lane = '') {
+  syncModelRouteUrl();
+  render();
+  if (lane) focusModelLane(lane);
+}
+
+function focusModelLane(lane) {
+  const targetLane = lane === 'vendor' ? 'provider' : lane;
+  requestAnimationFrame(() => {
+    const column = document.querySelector(`.miller-column[data-lane="${targetLane}"]`);
+    column?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+  });
+}
+
+function handleRouteKeydown(event) {
+  if (currentRoute() !== 'models') return;
+  const editing = event.target.matches?.('input, textarea, select, [contenteditable="true"]');
+  if (event.key === '/' && !editing) {
+    event.preventDefault();
+    document.querySelector('input[name="routeQuery"]')?.focus();
+    return;
+  }
+  if (editing || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Enter', 'Escape'].includes(event.key)) return;
+  const lanes = [...document.querySelectorAll('.miller-column')];
+  if (!lanes.length) return;
+  const focusedNode = document.activeElement?.closest?.('.miller-node');
+  let laneIndex = Math.max(0, lanes.findIndex((lane) => lane.contains(focusedNode)));
+  let nodes = [...lanes[laneIndex].querySelectorAll('button.miller-node')];
+  let nodeIndex = Math.max(0, nodes.indexOf(focusedNode));
+  if (event.key === 'Enter' && focusedNode) { focusedNode.click(); return; }
+  if (event.key === 'Escape') {
+    state.modelRouteFocus = { logical: state.modelRouteFocus.logical, real: '', vendor: '', provider: '', key: '', egress: '' };
+    renderModelRoute();
+    return;
+  }
+  if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+    laneIndex = Math.max(0, Math.min(lanes.length - 1, laneIndex + (event.key === 'ArrowRight' ? 1 : -1)));
+    nodes = [...lanes[laneIndex].querySelectorAll('button.miller-node')];
+    nodeIndex = Math.max(0, nodes.findIndex((node) => node.classList.contains('active')));
+  } else {
+    nodeIndex = Math.max(0, Math.min(nodes.length - 1, nodeIndex + (event.key === 'ArrowDown' ? 1 : -1)));
+  }
+  if (!nodes[nodeIndex]) return;
+  event.preventDefault();
+  nodes[nodeIndex].focus({ preventScroll: true });
+  nodes[nodeIndex].scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
 }
 
 function setConnection(online) {

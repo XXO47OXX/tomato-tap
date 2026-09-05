@@ -180,6 +180,39 @@ console.log('\n--- Kimi refresh datetime + relative + cap ---');
   check('signal.kimi_datetime_capped_32d', far?.retryAfterMs === 32 * 24 * 3600 * 1000);
 }
 
+console.log('\n--- Kimi 5-hour window 403 (reset-less, prober re-checks) ---');
+{
+  const fiveHour = detectQuotaSignal(
+    {
+      status: 403,
+      headers: {},
+      body: Buffer.from(JSON.stringify({
+        error: { message: "You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends." },
+      })),
+      networkError: null,
+    },
+    { vendor: 'relay', name: 'tomato_tap_relay_kimicode_env' },
+  );
+  check('signal.kimi_5h_matched', fiveHour?.matched === true);
+  check('signal.kimi_5h_label', fiveHour?.label === 'kimi-5h-window');
+  check('signal.kimi_5h_no_fixed_cooldown', fiveHour?.retryAfterMs == null);
+}
+
+console.log('\n--- Kimi quota profile is independent of the credential name ---');
+{
+  const signal = detectQuotaSignal(
+    {
+      status: 403,
+      headers: {},
+      body: Buffer.from(JSON.stringify({ error: { message: 'Reached usage limit for this billing cycle.' } })),
+      networkError: null,
+    },
+    { vendor: 'relay', name: 'tomato_tap_relay_custom', quotaSignalProfile: 'kimi-coding' },
+  );
+  check('signal.kimi_profile_matched', signal?.matched === true);
+  check('signal.kimi_profile_label', signal?.label === 'kimi-billing-cycle');
+}
+
 console.log('\n--- generic quota-managed 429 signals ---');
 {
   const quotaKey = {
@@ -205,6 +238,17 @@ console.log('\n--- generic quota-managed 429 signals ---');
     { vendor: 'relay', name: 'tomato_tap_relay_plain' },
   );
   check('signal.unmanaged_bodyless_429_ignored', unmanaged === null);
+
+  const kimiShortWindow = detectQuotaSignal(
+    { status: 429, headers: { 'retry-after': '30' }, body: Buffer.from('rate limited') },
+    {
+      vendor: 'relay',
+      name: 'tomato_tap_relay_custom',
+      quotaPolicy: { probeIntervalMs: 300000 },
+      quotaSignalProfile: 'kimi-coding',
+    },
+  );
+  check('signal.kimi_profile_short_429_ignored', kimiShortWindow === null);
 }
 
 console.log('\n--- opencode fallback (unparseable timing) ---');

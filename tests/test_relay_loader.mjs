@@ -74,6 +74,8 @@ expectSuccess('loads relay metadata from json and secrets from env', () => withJ
       },
       proxy: true,
       weight: 3,
+      fallbackAdmission: 'higher_weight_quota_closed',
+      quotaSignalProfile: 'kimi-coding',
       quota: {
         initialState: 'closed',
         probeModel: 'deepseek-v4-flash',
@@ -120,6 +122,8 @@ expectSuccess('loads relay metadata from json and secrets from env', () => withJ
     && k.rateLimitPolicy.requestsPerMinute === 60
     && k.rateLimitPolicy.mode === 'paced'
     && k.baseWeight === 3
+    && k.fallbackAdmission === 'higher_weight_quota_closed'
+    && k.quotaSignalProfile === 'kimi-coding'
     && k.quotaPolicy.initialState === 'closed'
     && k.quotaPolicy.probeModel === 'deepseek-v4-flash'
     && k.quotaPolicy.probeIntervalMs === 300000
@@ -219,6 +223,14 @@ expectThrow('invalid cap value', () => withJson({
   relays: {
     badcap: { host: 'api.example.test', path: '/v1', models: ['x'], cap: { initial: 0 } },
   },
+}, (path) => loadRelayRegistry({ path })));
+expectThrow('rejects invalid fallback admission', () => withJson({
+  schemaVersion: 1,
+  relays: { invalid: { host: 'api.example.test', models: ['x'], fallbackAdmission: 'on-any-error' } },
+}, (path) => loadRelayRegistry({ path })));
+expectThrow('rejects invalid quota signal profile', () => withJson({
+  schemaVersion: 1,
+  relays: { invalid: { host: 'api.example.test', models: ['x'], quotaSignalProfile: 'not valid' } },
 }, (path) => loadRelayRegistry({ path })));
 
 expectSuccess('normalizes backward-compatible proxy policies', () => {

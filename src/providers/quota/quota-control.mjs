@@ -96,6 +96,13 @@ export function createQuotaControlClient({ socketPath, timeoutMs = 5_000 }) {
 function handleConnection(socket, manager, onStateChanged) {
   let buffer = '';
   let answered = false;
+  // A client can time out while dispatch is still finishing. A closed peer is
+  // local transport noise and must not terminate the gateway process.
+  socket.on('error', (error) => {
+    if (error?.code !== 'EPIPE' && error?.code !== 'ECONNRESET') {
+      console.warn(`[quota-control] socket error: ${String(error?.message || error).slice(0, 256)}`);
+    }
+  });
   socket.setEncoding('utf8');
   socket.on('data', (chunk) => {
     if (answered) return;
@@ -158,7 +165,12 @@ function dispatch(message, manager, onStateChanged) {
 }
 
 function send(socket, response) {
-  socket.end(`${JSON.stringify(response)}\n`);
+  if (socket.destroyed || socket.writableEnded) return;
+  try {
+    socket.end(`${JSON.stringify(response)}\n`);
+  } catch (error) {
+    if (error?.code !== 'EPIPE' && error?.code !== 'ECONNRESET') throw error;
+  }
 }
 
 function sanitizeQuotaSignal(value) {

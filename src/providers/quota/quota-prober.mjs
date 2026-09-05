@@ -4,7 +4,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
-import { loadRelayRegistry } from '../relay-loader.mjs';
+import { createProxyAgentPool } from '../../egress/proxy-agent-pool.mjs';
+import { discoverRelayKeys, loadRelayRegistry } from '../relay-loader.mjs';
 import { createQuotaControlClient } from './quota-control.mjs';
 import { detectQuotaSignal } from './quota_infer.mjs';
 import { validateOpenAIResponse } from '../../routing/response-validator.mjs';
@@ -12,12 +13,21 @@ import { adaptLogicalRequest } from '../../routing/request-adapter.mjs';
 import { loadModelPolicy, realModelPolicy } from '../../routing/model-policy.mjs';
 import { parseDotenv } from '../../config/runtime-config.mjs';
 import { resolveStateLayout } from '../../config/state-layout.mjs';
-import { applyLegacyEnvAliases, relayCredential } from '../../config/env-compat.mjs';
+import { applyLegacyEnvAliases } from '../../config/env-compat.mjs';
 import { normalizeConfigBackend } from '../../config/config-backend.mjs';
 
 process.umask(0o077);
 
 export const PROBE_TICK_MS = 15_000;
+
+const PROBE_PROXY_AGENTS = createProxyAgentPool({
+  agentOptions: {
+    keepAlive: true,
+    keepAliveMsecs: 30_000,
+    maxSockets: 8,
+    maxFreeSockets: 4,
+  },
+});
 
 export function createQuotaProber({
   controlClient,
@@ -84,6 +94,10 @@ export function createQuotaProber({
           temperature: 0,
           max_tokens: claim.probeMaxTokens,
         };
+        if (deployment.quotaSignalProfile === 'kimi-coding'
+            && /^(?:kimi-)?k3(?:-|$)/i.test(claim.probeModel)) {
+          requestBody.reasoning_effort = 'low';
+        }
         if ((deployment.thinkingAdapter && deployment.thinkingAdapter !== 'none')
             || deployment.requestPolicy) {
           requestBody = JSON.parse(adaptLogicalRequest(
@@ -98,7 +112,9 @@ export function createQuotaProber({
           ).toString('utf8'));
         }
         result = await sendProbe(deployment, requestBody, timeoutMs);
-        validation = validateOpenAIResponse(result, { requestBody });
+        validation = probeUsesAnthropic(deployment)
+          ? validateAnthropicProbe(result)
+          : validateOpenAIResponse(result, { requestBody });
         quotaSignal = detectQuotaSignal(result, deployment);
       }
     } catch (error) {
@@ -159,10 +175,63 @@ export function createQuotaProber({
   return { tick, drain, replaceDeployments };
 }
 
+function probeUsesAnthropic(deployment) {
+  const formats = deployment?.apiFormats;
+  const hasAnthropic = formats && typeof formats.has === 'function'
+    ? formats.has('anthropic')
+    : Array.isArray(formats) && formats.includes('anthropic');
+  const prefix = String(deployment?.pathPrefix || '').replace(/\/$/, '');
+  return hasAnthropic === true && !prefix.endsWith('/v1');
+}
+
+function validateAnthropicProbe(result) {
+  if (result.networkError) return { valid: false, failureClass: 'network' };
+  if (result.status !== 200) return { valid: false, failureClass: 'http_status' };
+  try {
+    const body = JSON.parse(result.body.toString('utf8'));
+    return Array.isArray(body?.content) && body.content.length > 0
+      ? { valid: true, failureClass: '' }
+      : { valid: false, failureClass: 'wrapped_error' };
+  } catch {
+    return { valid: false, failureClass: 'invalid_json' };
+  }
+}
+
+export function buildProbeHeaders(deployment, { anthropic, bodyLength }) {
+  const headers = { ...(deployment?.headers || {}) };
+  deleteHeader(headers, 'authorization');
+  deleteHeader(headers, 'x-api-key');
+  const authType = String(
+    deployment?.authType || (anthropic ? 'x-api-key' : 'bearer'),
+  ).trim().toLowerCase();
+  if (authType === 'x-api-key') setHeader(headers, 'x-api-key', deployment.value);
+  else if (authType === 'bearer') setHeader(headers, 'authorization', `Bearer ${deployment.value}`);
+  else throw new Error(`unsupported probe auth policy: ${authType}`);
+  if (anthropic && !hasHeader(headers, 'anthropic-version')) {
+    setHeader(headers, 'anthropic-version', '2023-06-01');
+  }
+  setHeader(headers, 'content-type', 'application/json');
+  setHeader(headers, 'content-length', String(bodyLength));
+  if (!hasHeader(headers, 'accept')) setHeader(headers, 'accept', 'application/json');
+  if (!hasHeader(headers, 'user-agent')) {
+    setHeader(headers, 'user-agent', 'opencode/tomato-tap-quota-prober');
+  }
+  return headers;
+}
+
 function sendProbe(deployment, requestBody, timeoutMs) {
-  const body = Buffer.from(JSON.stringify(requestBody));
+  const anthropic = probeUsesAnthropic(deployment);
+  const payload = anthropic ? {
+    model: requestBody.model,
+    messages: requestBody.messages,
+    max_tokens: requestBody.max_tokens,
+    ...(requestBody.reasoning_effort ? { reasoning_effort: requestBody.reasoning_effort } : {}),
+  } : requestBody;
+  const body = Buffer.from(JSON.stringify(payload));
   const transport = deployment.proto === 'http' ? http : https;
-  const path = `${String(deployment.pathPrefix || '').replace(/\/$/, '')}/chat/completions`;
+  const targetProtocol = deployment.proto === 'http' ? 'http:' : 'https:';
+  const prefix = String(deployment.pathPrefix || '').replace(/\/$/, '');
+  const path = anthropic ? `${prefix}/v1/messages` : `${prefix}/chat/completions`;
   return new Promise((resolve) => {
     const startedAt = Date.now();
     const req = transport.request({
@@ -170,13 +239,10 @@ function sendProbe(deployment, requestBody, timeoutMs) {
       port: deployment.port,
       path,
       method: 'POST',
-      headers: {
-        authorization: `Bearer ${deployment.value}`,
-        'content-type': 'application/json',
-        'content-length': String(body.length),
-        accept: 'application/json',
-        'user-agent': 'opencode/tomato-tap-quota-prober',
-      },
+      agent: deployment.proxyUrl
+        ? PROBE_PROXY_AGENTS.get(deployment.proxyUrl, targetProtocol)
+        : false,
+      headers: buildProbeHeaders(deployment, { anthropic, bodyLength: body.length }),
     }, (res) => {
       const chunks = [];
       let size = 0;
@@ -205,6 +271,21 @@ function sendProbe(deployment, requestBody, timeoutMs) {
     }));
     req.end(body);
   });
+}
+
+function hasHeader(headers, expected) {
+  return Object.keys(headers).some((name) => name.toLowerCase() === expected);
+}
+
+function deleteHeader(headers, expected) {
+  for (const name of Object.keys(headers)) {
+    if (name.toLowerCase() === expected) delete headers[name];
+  }
+}
+
+function setHeader(headers, name, value) {
+  deleteHeader(headers, name.toLowerCase());
+  headers[name] = value;
 }
 
 function loadDotenv(path) {
@@ -336,23 +417,18 @@ function loadProbeCatalog({
   const registry = loadRelayRegistry({ path: relaysPath, document: relayDocument });
   const modelPolicy = loadModelPolicy({ path: modelsPath, document: modelDocument });
   const deployments = new Map();
-  for (const [deploymentId, meta] of Object.entries(registry.relays)) {
-    if (!meta.quotaPolicy || meta.disabled) continue;
-    const value = relayCredential(env, deploymentId);
-    if (!value) continue;
-    const probePolicy = realModelPolicy(modelPolicy, meta.quotaPolicy.probeModel);
-    deployments.set(deploymentId, {
-      deploymentId,
-      name: `tomato_tap_relay_${deploymentId}`,
-      value,
-      host: meta.host,
-      pathPrefix: meta.path,
-      proto: meta.proto,
-      port: meta.port,
-      quotaPolicy: meta.quotaPolicy,
-      expiresAtMs: meta.expiresAtMs,
+  const discovered = discoverRelayKeys(
+    'relay',
+    /^(?:tomato_tap|mimotap)_relay_(.+?)_key$/i,
+    env,
+    registry,
+  );
+  for (const deployment of discovered) {
+    if (!deployment.quotaPolicy) continue;
+    const probePolicy = realModelPolicy(modelPolicy, deployment.quotaPolicy.probeModel);
+    deployments.set(deployment.deploymentId, {
+      ...deployment,
       thinkingAdapter: probePolicy?.thinkingAdapter || 'none',
-      requestPolicy: meta.requestPolicy || null,
     });
   }
   const revision = createHash('sha256')

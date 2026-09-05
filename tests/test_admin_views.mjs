@@ -33,6 +33,7 @@ function fixture() {
     rateLimit: { requestsPerMinute: 60, mode: 'paced' },
   };
   const key = {
+    slot_id: 'key-001',
     name: 'sensitive-slot-label',
     deployment: 'provider-a',
     provider: 'Provider A',
@@ -45,6 +46,8 @@ function fixture() {
     total_5xx_today: 2,
     total_net_err_today: 1,
     canonical_models: ['glm-5.2', 'deepseek-v4-flash'],
+    proxy_mode: 'sticky',
+    proxy_node: 'egress-primary',
   };
   const usage = {
     date: '2026-08-30',
@@ -81,6 +84,22 @@ function fixture() {
         subscriptions: { configured: true, count: 2, source: 'file', writable: true },
         staticNodes: { configured: true, source: 'file', writable: true },
         sharedProxy: { configured: false, source: 'none', writable: true },
+        fixedBackends: [{
+          id: 'fixed-primary', label: 'egress-primary', protocol: 'http',
+          host: '192.0.2.84', port: 7897, weight: 1,
+          credentialBindings: 0,
+          profileRefs: [{ profileId: 'api-fixed', role: 'primary', order: 1 }],
+        }, {
+          id: 'fixed-fallback', label: 'egress-fallback', protocol: 'http',
+          host: '198.51.100.39', port: 7890, weight: 0.25,
+          credentialBindings: 1,
+          profileRefs: [{ profileId: 'api-fixed', role: 'fallback', order: 2 }],
+        }],
+        proxyProfiles: [{
+          id: 'api-fixed', enabled: true, backendKind: 'fixed',
+          backendIds: ['fixed-primary', 'fixed-fallback'],
+          selectionStrategy: 'least-active', maxAttempts: 2, connectTimeoutMs: 8000,
+        }],
       },
       paths: {},
     },
@@ -88,6 +107,16 @@ function fixture() {
       key_pool: [key],
       runtime_config: { active_revision: 'revision-a', reload_count: 2 },
       access: { bind_host: '127.0.0.1' },
+      logical_proxy: {
+        profile_runtime: {
+          profiles: [{
+            profile_id: 'api-fixed', listening: true, total_connections: 3,
+            backends: [{ label: 'egress-primary', successes: 3, failures: 0, cooldown_remaining_ms: 0 }, {
+              label: 'egress-fallback', successes: 0, failures: 0, cooldown_remaining_ms: 0,
+            }],
+          }],
+        },
+      },
     },
     models: {
       logical: [{
@@ -170,6 +199,7 @@ test('connections filter a large provider ledger by query, status, protocol, and
   });
   data.status.key_pool.push({
     ...data.status.key_pool[0],
+    slot_id: 'key-002',
     deployment: 'provider-b',
     provider: 'Provider B',
     cooldown_remaining_ms: 60_000,
@@ -250,9 +280,25 @@ test('model relationship explorer narrows key slots after selecting a provider',
 test('model workbench supports provider perspective without losing the relationship chain', () => {
   const html = modelsView(fixture(), { logical: 'classifier' }, 'provider', 'Provider A');
   assert.match(html, /data-perspective="provider"/);
-  assert.match(html, /provider-table/);
+  assert.match(html, /data-lane="provider"/);
   assert.match(html, /Provider A/);
   assert.match(html, /miller-browser/);
+  assert.match(html, /relationship-inspector/);
+  assert.doesNotMatch(html, /perspective-stage/);
+});
+
+test('model relationship browser exposes selectable key and egress lanes without revealing secrets', () => {
+  const html = modelsView(fixture(), {
+    logical: 'classifier',
+    real: 'glm-5.2',
+    provider: 'provider-a',
+    key: 'key-001',
+  }, 'key');
+  assert.match(html, /data-action="route-filter-key" data-id="key-001"/);
+  assert.match(html, /data-lane="egress"/);
+  assert.match(html, /egress-primary/);
+  assert.match(html, /供应商筛选/);
+  assert.doesNotMatch(html, /sensitive-slot-label/);
 });
 
 test('usage integrates the price catalog and keeps native currencies separate', () => {
@@ -321,6 +367,13 @@ test('egress view exposes policies and redacted bindings without secret inputs',
   assert.match(html, /redacted-node-id/);
   assert.match(html, /自动粘性/);
   assert.match(html, /使用 HTTPS_PROXY/);
+  assert.match(html, /固定出口/);
+  assert.match(html, /egress-primary/);
+  assert.match(html, /192\.0\.2\.84:7897/);
+  assert.match(html, /主节点/);
+  assert.match(html, /备用/);
+  assert.match(html, /api-fixed/);
+  assert.match(html, /least-active/);
   assert.doesNotMatch(html, /sensitive-slot-label/);
 });
 

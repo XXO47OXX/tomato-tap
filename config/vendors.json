@@ -30,6 +30,35 @@
           }
         }
       ]
+    },
+    {
+      "id": "cursor_acp",
+      "displayName": "Cursor Agent ACP bridge",
+      "description_en": "Optional loopback-only text bridge from OpenAI Chat Completions to Cursor Agent Client Protocol.",
+      "description_zh": "可选的纯本地文本桥接，将 OpenAI Chat Completions 转为 Cursor Agent Client Protocol。",
+      "category": "local-agent-bridge",
+      "envDiscovery": "single",
+      "envPrefix": "^tomato_tap_cursor_acp_credential$",
+      "defaultHost": "127.0.0.1",
+      "nativeModels": ["cursor-agent"],
+      "logicalEligible": false,
+      "preserveIncomingBody": true,
+      "preserveIncomingHeaders": true,
+      "requestTimeouts": {
+        "firstByteMs": 120000,
+        "totalMs": 600000
+      },
+      "routes": [
+        {
+          "prefix": "/cursor/v1",
+          "apiFormat": "openai",
+          "auth": "bearer",
+          "rewrite": {
+            "from": "^/cursor/v1",
+            "to": ""
+          }
+        }
+      ]
     }
   ]
 }

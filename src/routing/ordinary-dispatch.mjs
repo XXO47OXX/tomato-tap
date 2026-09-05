@@ -28,6 +28,7 @@ export function createOrdinaryDispatcher({
   pickKeyAndAcquire,
   keyRuntimeAvailable,
   quotaCanDispatch,
+  candidateAdmissionAllowed = () => true,
   rateLimitCanDispatch,
   keyPoolStatus,
   pickHeaders,
@@ -141,6 +142,7 @@ export function createOrdinaryDispatcher({
           if (vendor && key.vendor !== vendor) return count;
           if (format && key.apiFormats instanceof Set && !key.apiFormats.has(format)) return count;
           if (requestedModel && key.modelSet && !key.modelSet.has(requestedModel)) return count;
+          if (!candidateAdmissionAllowed(key, vendor, requestedModel, format, Date.now())) return count;
           if (!keyRuntimeAvailable(key)) return count;
           if (!quotaCanDispatch(key.deploymentId, Date.now())) return count;
           if (!rateLimitCanDispatch(key, keyState[index], Date.now())) return count;

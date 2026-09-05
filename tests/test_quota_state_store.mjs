@@ -28,6 +28,7 @@ const window = {
   lastProbeStatus: 429,
   consecutiveProbeFailures: 1,
 };
+const classifiedWindow = { ...window, deploymentId: 'quota-b', closedKind: 'quota' };
 
 {
   const { path } = tempStatePath();
@@ -54,6 +55,16 @@ const window = {
   assert.equal(readdirSync(join(dir, 'runtime')).some((name) => name.includes('.tmp-')), false);
   assert.equal(statSync(join(dir, 'runtime')).mode & 0o777, 0o700);
   assert.equal(statSync(path).mode & 0o777, 0o600);
+}
+
+{
+  const { path } = tempStatePath();
+  saveQuotaState(path, [classifiedWindow], 1234);
+  assert.deepEqual(loadQuotaState(path).windows, [classifiedWindow]);
+  assert.throws(
+    () => saveQuotaState(path, [{ ...classifiedWindow, closedKind: 'network' }], 1234),
+    /invalid closedKind/i,
+  );
 }
 
 {

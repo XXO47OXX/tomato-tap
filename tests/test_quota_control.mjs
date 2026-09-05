@@ -100,6 +100,18 @@ assert.equal((await rawLine('{bad json')).ok, false);
 assert.match((await rawLine(JSON.stringify({ id: '3', method: 'unknown' }))).error, /unknown method/i);
 assert.match((await rawLine('x'.repeat(17 * 1024))).error, /too large/i);
 
+await new Promise((resolve, reject) => {
+  const socket = createConnection(socketPath);
+  socket.once('connect', () => {
+    socket.end(`${JSON.stringify({ id: 'closed-peer', method: 'unknown' })}\n`);
+    socket.destroy();
+    resolve();
+  });
+  socket.once('error', reject);
+});
+await new Promise((resolve) => setTimeout(resolve, 20));
+assert.match((await rawLine(JSON.stringify({ id: '4', method: 'unknown' }))).error, /unknown method/i);
+
 await server.close();
 assert.equal(existsSync(socketPath), false);
 

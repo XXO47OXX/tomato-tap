@@ -195,6 +195,7 @@ export function createLogicalDeploymentRegistry({
       host: key.host,
       vendor: key.vendor,
       quotaPolicy: key.quotaPolicy || null,
+      quotaSignalProfile: key.quotaSignalProfile || '',
       modelAliases: key.modelAliases || null,
       apiFormats: key.apiFormats || null,
       requestPolicy: key.requestPolicy || null,

@@ -16,6 +16,7 @@ const WINDOW_FIELDS = new Set([
   'deploymentId',
   'state',
   'closedReason',
+  'closedKind',
   'closedAt',
   'nextProbeAt',
   'openedAt',
@@ -24,6 +25,7 @@ const WINDOW_FIELDS = new Set([
   'consecutiveProbeFailures',
 ]);
 const STATES = new Set(['open', 'closed', 'half_open', 'boosted']);
+const CLOSED_KINDS = new Set(['', 'quota', 'probe_failure', 'state']);
 
 export function loadQuotaState(path) {
   if (!existsSync(path)) return { corrupt: false, windows: [] };
@@ -108,10 +110,14 @@ function validateWindow(input) {
     }
     return value;
   };
+  if (input.closedKind != null && !CLOSED_KINDS.has(input.closedKind)) {
+    throw new Error(`quota-state-store: invalid closedKind "${input.closedKind}"`);
+  }
   return {
     deploymentId: input.deploymentId,
     state: input.state,
     closedReason: input.closedReason,
+    ...(input.closedKind != null ? { closedKind: input.closedKind } : {}),
     closedAt: number('closedAt'),
     nextProbeAt: number('nextProbeAt'),
     openedAt: number('openedAt'),

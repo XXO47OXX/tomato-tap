@@ -52,12 +52,19 @@ export const QUOTA_BODY_PATTERNS = [
     maxMs: 7 * 24 * 60 * 60 * 1000,
     label: 'opencode-monthly' },
   // Kimi quota errors may include an absolute or relative reset time.
-  { keyNamePrefix: 'tomato_tap_relay_kimicode',
+  { signalProfile: 'kimi-coding', legacyKeyNamePrefix: 'tomato_tap_relay_kimicode',
     statusCodes: [403],
     match: /access_terminated_error|reached usage limit for this billing cycle/i,
     cooldownMs: (text) => parseRefreshTimeMs(text) ?? 6 * 60 * 60 * 1000,
     maxMs: 32 * 24 * 60 * 60 * 1000,
     label: 'kimi-billing-cycle' },
+  // This rolling window has no reliable reset timestamp. Keep it under the
+  // quota prober instead of inventing a fixed cooldown.
+  { signalProfile: 'kimi-coding', legacyKeyNamePrefix: 'tomato_tap_relay_kimicode',
+    statusCodes: [403],
+    match: /5-hour usage limit|5-hour window/i,
+    cooldownMs: () => null,
+    label: 'kimi-5h-window' },
   // ChatGPT-codex Team OAuth: body has `error.resets_in_seconds`. Consolidated
   // here so all 429-cooldown inference lives in one place.
   { vendor: VENDOR_CHATGPT_CODEX,
@@ -114,6 +121,9 @@ export function detectQuotaSignal(result, keyPick) {
     if (p.vendor && keyPick.vendor !== p.vendor) continue;
     if (p.keyName && keyPick.name !== p.keyName) continue;
     if (p.keyNamePrefix && !keyPick.name.startsWith(p.keyNamePrefix)) continue;
+    if (p.signalProfile
+        && keyPick.quotaSignalProfile !== p.signalProfile
+        && !(p.legacyKeyNamePrefix && keyPick.name.startsWith(p.legacyKeyNamePrefix))) continue;
     if (!p.match.test(text)) continue;
     let ms = parseRetryAfterMs(result.headers);
     if (ms == null) ms = p.cooldownMs(text);
@@ -140,6 +150,7 @@ export function detectQuotaSignal(result, keyPick) {
   // key-level short backoff is the correct response unless the
   // body matches the explicit billing-cycle 403 pattern above.
   if (result.status === 429 && keyPick?.quotaPolicy
+      && keyPick.quotaSignalProfile !== 'kimi-coding'
       && !(keyPick.name || '').startsWith('tomato_tap_relay_kimicode')) {
     const ms = parseRetryAfterMs(result.headers);
     const label = 'generic-quota-429';

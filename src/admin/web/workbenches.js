@@ -39,6 +39,9 @@ export function providerDrawer(provider, keys = [], detailLevel = 'safe') {
       ${detail('并发', `${fmt(summary.inflight)} / ${fmt(summary.cap)}`)}
       ${detail('今日结果', `${fmt(summary.success)} 次 2XX · ${fmt(summary.errors)} 次错误`)}
       ${detail('出口策略', proxyModeName(proxyPolicyValue(provider.proxy)))}
+      ${detail('路由权重', String(provider.weight || 1))}
+      ${detail('回退条件', provider.fallbackAdmission === 'higher_weight_quota_closed' ? '仅高权重上游额度关闭时' : '正常候选')}
+      ${provider.quota ? detail('额度探针', `${provider.quota.probeModel || '—'} · ${formatCountdown(provider.quota.probeIntervalMs || 0)}`) : ''}
     </dl>
     <section class="drawer-section"><header><h3>模型</h3><span>${fmt(provider.models?.length)} 个</span></header><div class="tag-cloud">${tags(provider.models || [], 80) || '<span class="muted">未配置模型</span>'}</div></section>
     <section class="drawer-section"><header><h3>Key 槽位</h3><span>${fmt(slots.length)} 个</span></header>${drawerSlots(slots, keys, detailLevel)}</section>
@@ -51,6 +54,8 @@ export function relationshipWorkbench({
   focus = {}, perspective = 'logical', query = '', detailLevel = 'safe',
 } = {}) {
   if (!logicalModels.length) return '';
+  const needle = normalizeModelName(query);
+  const matches = (...values) => !needle || normalizeModelName(values.flat().filter(Boolean).join(' ')).includes(needle);
   const selectedLogical = logicalModels.find(
     (item) => normalizeModelName(item.name) === normalizeModelName(focus.logical),
   ) || logicalModels[0];
@@ -61,20 +66,40 @@ export function relationshipWorkbench({
   const targetModels = selectedReal ? [selectedReal] : candidates;
   const targetSet = new Set(targetModels.map(normalizeModelName));
   const relatedProviders = providers.filter((provider) => providerSupports(provider, targetSet));
-  const selectedProvider = relatedProviders.find((provider) => provider.id === focus.provider)?.id || '';
-  const visibleProviders = selectedProvider
-    ? relatedProviders.filter((provider) => provider.id === selectedProvider)
+  const relatedProviderIds = new Set(relatedProviders.map((provider) => provider.id));
+  const indexedKeys = keys.map((key, index) => ({ key, index, id: keySlotId(key, index) }));
+  const modelKeys = indexedKeys.filter(({ key }) => relatedProviderIds.has(key.deployment) && slotSupports(key, targetSet));
+  const vendorGroups = groupVendors(modelKeys);
+  const selectedVendor = vendorGroups.some((group) => group.id === focus.vendor) ? focus.vendor : '';
+  const vendorProviders = selectedVendor
+    ? relatedProviders.filter((provider) => modelKeys.some(({ key }) => key.deployment === provider.id && vendorId(key) === selectedVendor))
     : relatedProviders;
+  const selectedProvider = vendorProviders.find((provider) => provider.id === focus.provider)?.id || '';
+  const visibleProviders = selectedProvider ? vendorProviders.filter((provider) => provider.id === selectedProvider) : vendorProviders;
   const providerIds = new Set(visibleProviders.map((provider) => provider.id));
-  const indexedKeys = keys.map((key, index) => ({ key, index }));
   const relatedKeys = indexedKeys.filter(({ key }) => providerIds.has(key.deployment)
     && slotSupports(key, targetSet));
+  const selectedKey = relatedKeys.find(({ id }) => id === focus.key) || null;
+  const egressGroups = groupEgress(selectedKey ? [selectedKey] : relatedKeys, providers);
+  const selectedEgress = egressGroups.find((item) => item.id === focus.egress) || null;
   const logicalRuntime = logicalStatus.find(
     (item) => normalizeModelName(item.id || item.name) === normalizeModelName(selectedLogical.name),
   );
   const logicalHealth = logicalRuntime?.available || logicalRuntime?.health === 'available'
     ? { lamp: 'ok', label: '可用' }
     : { lamp: 'idle', label: healthName(logicalRuntime?.health) };
+  const logicalNodes = logicalModels.filter((model) => (
+    normalizeModelName(model.name) === normalizeModelName(selectedLogical.name)
+    || matches(model.name, model.candidates, model.requiredCapabilities)
+  ));
+  const realNodes = candidates.filter((model) => normalizeModelName(model) === normalizeModelName(selectedReal) || matches(model));
+  const providerNodes = vendorProviders.filter((provider) => provider.id === selectedProvider
+    || matches(provider.id, provider.label, provider.baseUrl, provider.models, provider.canonicalModels, providerVendors(provider.id, modelKeys)));
+  const keyNodes = relatedKeys.filter(({ key, id }) => id === selectedKey?.id
+    || matches(id, key.name, key.vendor, key.provider, key.deployment, [...slotModels(key)]));
+  const egressNodes = egressGroups.filter((item) => item.id === selectedEgress?.id || matches(item.id, item.label, item.detail));
+  const activeLane = perspective === 'vendor' ? 'provider' : perspective;
+  const selectedProviderRecord = providers.find((provider) => provider.id === selectedProvider) || null;
   return `<section class="relationship-workbench" id="model-route-workbench">
     <div class="workbench-toolbar">
       <div class="perspective-switch" aria-label="关系视角">
@@ -83,36 +108,44 @@ export function relationshipWorkbench({
         ${perspectiveButton('vendor', '供应商', perspective)}
         ${perspectiveButton('provider', '上游', perspective)}
         ${perspectiveButton('key', 'Key', perspective)}
+        ${perspectiveButton('egress', '出口', perspective)}
       </div>
       <label class="workbench-search"><span>搜索</span><input name="routeQuery" value="${escapeHtml(query)}" placeholder="模型、供应商、上游或 Key 槽位"></label>
     </div>
-    <div class="perspective-stage">${perspectiveTable({ perspective, query, logicalModels, realModels, providers, keys, logicalStatus, detailLevel })}</div>
-    <div class="chain-head" id="model-route-chain" tabindex="-1"><div><h3>关联链路</h3><p>任务入口 → 聚合模型 → 上游实际模型与服务 → Key。</p></div><div class="chain-scope"><span class="square-lamp ${logicalHealth.lamp}"></span><b class="mono">${escapeHtml(selectedLogical.name)}</b>${selectedReal ? `<i>→</i><b class="mono">${escapeHtml(selectedReal)}</b>` : ''}${selectedProvider ? `<i>→</i><b>${escapeHtml(providerLabel(providers, selectedProvider))}</b>` : ''}</div></div>
-    <div class="chain-note">聚合模型把同能力模型的多个供应来源统一调度；上游节点同时显示实际发送给供应商的模型名。点击左侧项目会逐级缩小右侧范围。</div>
-    <div class="miller-browser">
-      ${millerColumn('任务逻辑模型', `${logicalModels.length}/${logicalModels.length}`, logicalModels.map((model) => {
+    <div class="chain-head" id="model-route-chain" tabindex="-1"><div><h3>关联链路</h3><p>多个供应来源统一调度；点击节点缩小可达路径。</p></div><div class="chain-scope"><span class="square-lamp ${logicalHealth.lamp}"></span>${pathSegment(selectedLogical.name, 'route-select-logical', selectedLogical.name)}${selectedReal ? pathArrow() + pathSegment(selectedReal, 'route-filter-real', selectedReal, { logical: selectedLogical.name }) : ''}${selectedProvider ? pathArrow() + pathSegment(providerLabel(providers, selectedProvider), 'route-filter-provider', selectedProvider, { logical: selectedLogical.name, real: selectedReal, vendor: selectedVendor }) : ''}${selectedKey ? pathArrow() + `<b class="mono">${escapeHtml(keyDisplayName(selectedKey.key, selectedKey.index, detailLevel))}</b>` : ''}${selectedEgress ? pathArrow() + `<b>${escapeHtml(selectedEgress.label)}</b>` : ''}<button class="text-action" data-action="route-filter-reset" data-logical="${escapeHtml(selectedLogical.name)}">重置</button></div></div>
+    <div class="vendor-facets" aria-label="供应商筛选"><span>供应商</span><button class="${selectedVendor ? '' : 'active'}" data-action="route-filter-vendor" data-id="">全部 <b>${vendorGroups.length}</b></button>${vendorGroups.map((group) => `<button class="${group.id === selectedVendor ? 'active' : ''}" data-action="route-filter-vendor" data-id="${escapeHtml(group.id)}"><span class="square-lamp ${group.summary.lamp}"></span>${escapeHtml(group.id)} <b>${group.keys.length}</b></button>`).join('')}</div>
+    <div class="relationship-layout">
+      <div class="relationship-browser-shell">
+        <div class="miller-browser" role="group" aria-label="模型调度关系">
+      ${millerColumn('logical', '任务逻辑模型', `${logicalNodes.length}/${logicalModels.length}`, logicalNodes.map((model) => {
         const active = normalizeModelName(model.name) === normalizeModelName(selectedLogical.name);
         const runtime = logicalStatus.find((item) => normalizeModelName(item.id || item.name) === normalizeModelName(model.name));
         const state = runtime?.available || runtime?.health === 'available' ? { lamp: 'ok', label: '可用' } : { lamp: 'idle', label: healthName(runtime?.health) };
         return nodeButton('route-select-logical', model.name, model.name, `${model.candidates?.length || 0} 个候选 · ${state.label}`, state.lamp, active);
-      }))}
-      ${millerColumn('聚合模型', `${candidates.length}/${realModels.length}`, candidates.map((model) => {
+      }), activeLane)}
+      ${millerColumn('real', '聚合模型', `${realNodes.length}/${candidates.length}`, realNodes.map((model) => {
         const modelProviders = providers.filter((provider) => providerSupports(provider, new Set([normalizeModelName(model)])));
         const modelSlots = keys.filter((key) => modelProviders.some((provider) => provider.id === key.deployment) && slotSupports(key, new Set([normalizeModelName(model)])));
         const state = slotSummary(modelSlots);
         return nodeButton('route-filter-real', model, model, `${modelProviders.length} 个上游 · ${modelSlots.length} 个 Key`, state.lamp, normalizeModelName(model) === normalizeModelName(selectedReal), { logical: selectedLogical.name });
-      }))}
-      ${millerColumn('上游 / 实际模型', `${relatedProviders.length}/${providers.length}`, relatedProviders.map((provider) => {
+      }), activeLane)}
+      ${millerColumn('provider', '上游 / 实际模型', `${providerNodes.length}/${relatedProviders.length}`, providerNodes.map((provider) => {
         const slots = keys.filter((key) => key.deployment === provider.id && slotSupports(key, targetSet));
         const state = slotSummary(slots);
         const upstreamModels = providerUpstreamModels(provider, targetSet);
-        return nodeButton('route-filter-provider', provider.id, provider.label || provider.id, `${upstreamModels.join('、') || '同名透传'} · ${slots.length} 个 Key · ${state.label}`, state.lamp, provider.id === selectedProvider, { logical: selectedLogical.name, real: selectedReal });
-      }))}
-      ${millerColumn('Key', `${relatedKeys.length}/${keys.length}`, relatedKeys.map(({ key, index }) => {
+        const vendors = providerVendors(provider.id, modelKeys);
+        return nodeButton('route-filter-provider', provider.id, provider.label || provider.id, `${upstreamModels.join('、') || '同名透传'} · ${slots.length} Key · ${vendors.join('、') || '未标注供应商'}`, state.lamp, provider.id === selectedProvider, { logical: selectedLogical.name, real: selectedReal, vendor: selectedVendor });
+      }), activeLane)}
+      ${millerColumn('key', 'Key', `${keyNodes.length}/${relatedKeys.length}`, keyNodes.map(({ key, index, id }) => {
         const state = slotState(key);
-        const label = detailLevel === 'safe' ? `#${String(index + 1).padStart(3, '0')}` : key.name || `#${String(index + 1).padStart(3, '0')}`;
-        return `<article class="miller-node key-node"><span><span class="square-lamp ${state.lamp}"></span><b class="mono">${escapeHtml(label)}</b></span><small>${escapeHtml(state.label)} · ${fmt(key.inflight)}/${fmt(key.cap)}</small></article>`;
-      }))}
+        const label = keyDisplayName(key, index, detailLevel);
+        return nodeButton('route-filter-key', id, label, `${state.label} · ${fmt(key.inflight)}/${fmt(key.cap)} · ${vendorId(key)}`, state.lamp, id === selectedKey?.id);
+      }), activeLane)}
+      ${millerColumn('egress', '代理出口', `${egressNodes.length}/${egressGroups.length}`, egressNodes.map((item) => nodeButton('route-filter-egress', item.id, item.label, `${item.detail} · ${item.keys.length} Key`, item.lamp, item.id === selectedEgress?.id)), activeLane)}
+        </div>
+        <div class="relationship-keyboard-hint"><span><kbd>←</kbd><kbd>→</kbd> 切换层级</span><span><kbd>↑</kbd><kbd>↓</kbd> 选择节点</span><span><kbd>/</kbd> 搜索</span><span><kbd>Esc</kbd> 返回全路径</span></div>
+      </div>
+      ${relationshipInspector({ selectedLogical, selectedReal, selectedVendor, selectedProvider: selectedProviderRecord, selectedKey, selectedEgress, realModels, providers, keys: relatedKeys, logicalRuntime, detailLevel, vendorGroups })}
     </div>
   </section>`;
 }
@@ -175,74 +208,193 @@ function detail(label, value, classes = '') {
   return `<div><dt>${escapeHtml(label)}</dt><dd class="${classes}">${escapeHtml(value)}</dd></div>`;
 }
 
-function perspectiveTable({ perspective, query, logicalModels, realModels, providers, keys, logicalStatus, detailLevel }) {
-  const needle = normalizeModelName(query);
-  const includes = (...values) => !needle || values.some((value) => normalizeModelName(value).includes(needle));
-  if (perspective === 'real') {
-    const rows = realModels.filter((model) => includes(model.name, model.qualityTier, ...(model.capabilities || []))).map((model) => {
-      const logical = logicalModels.filter((item) => (item.candidates || []).some((name) => normalizeModelName(name) === normalizeModelName(model.name)));
-      const modelProviders = providers.filter((provider) => providerSupports(provider, new Set([normalizeModelName(model.name)])));
-      const slots = keys.filter((key) => modelProviders.some((provider) => provider.id === key.deployment) && slotSupports(key, new Set([normalizeModelName(model.name)])));
-      const state = slotSummary(slots);
-      return `<tr><td><div class="entity-title"><span class="square-lamp ${state.lamp}"></span><b class="mono">${escapeHtml(model.name)}</b></div></td><td>${tags(logical.map((item) => item.name), 5)}</td><td>${fmt(modelProviders.length)}</td><td>${fmt(slots.length)}</td><td>${escapeHtml(model.qualityTier || '—')}</td><td>${escapeHtml(state.label)}</td><td><button class="text-action" data-action="edit-real-model" data-id="${escapeHtml(model.name)}">策略</button></td></tr>`;
-    });
-    return entityTable('<th>聚合模型</th><th>任务入口</th><th class="num">上游</th><th class="num">Key</th><th>质量</th><th>状态</th><th>操作</th>', rows, 7);
-  }
-  if (perspective === 'vendor') {
-    const groups = new Map();
-    keys.forEach((key) => {
-      const vendor = key.vendor || 'unknown';
-      const group = groups.get(vendor) || { vendor, providers: new Set(), slots: [], models: new Set() };
-      group.providers.add(key.deployment || key.provider || 'unknown');
-      group.slots.push(key);
-      slotModels(key).forEach((model) => group.models.add(model));
-      groups.set(vendor, group);
-    });
-    const rows = [...groups.values()].filter((group) => includes(group.vendor, ...group.providers, ...group.models)).map((group) => {
-      const stats = summarizeKeys(group.slots);
-      return `<tr><td><div class="entity-title"><span class="square-lamp ${stats.hot ? 'ok' : stats.cooling ? 'warn' : 'idle'}"></span><b>${escapeHtml(group.vendor)}</b></div></td><td class="num">${fmt(group.providers.size)}</td><td class="num">${fmt(group.slots.length)}</td><td class="num">${fmt(stats.hot)}</td><td class="num">${fmt(stats.cooling)}</td><td>${tags([...group.models], 5)}</td></tr>`;
-    });
-    return entityTable('<th>供应商</th><th class="num">上游</th><th class="num">Key</th><th class="num">可调度</th><th class="num">冷却</th><th>模型</th>', rows, 6);
-  }
-  if (perspective === 'provider') {
-    const rows = providers.filter((provider) => includes(provider.id, provider.label, provider.baseUrl, ...(provider.models || []))).map((provider) => providerRow(provider, keys));
-    return entityTable('<th>状态 / 上游</th><th>协议与地址</th><th>模型</th><th class="num">Key</th><th class="num">活动 / 容量</th><th class="num">今日 2XX / 错误</th><th>出口</th><th>操作</th>', rows, 8, 'provider-table');
-  }
-  if (perspective === 'key') {
-    const rows = keys.map((key, index) => ({ key, index })).filter(({ key, index }) => includes(key.name, key.vendor, key.provider, key.deployment, `#${String(index + 1).padStart(3, '0')}`, ...slotModels(key))).map(({ key, index }) => {
-      const state = slotState(key);
-      const label = detailLevel === 'safe' ? `#${String(index + 1).padStart(3, '0')}` : key.name || `#${String(index + 1).padStart(3, '0')}`;
-      return `<tr><td><div class="entity-title"><span class="square-lamp ${state.lamp}"></span><b class="mono">${escapeHtml(label)}</b></div></td><td>${escapeHtml(key.provider || key.deployment || 'unknown')}</td><td>${escapeHtml(key.vendor || '—')}</td><td>${tags([...slotModels(key)], 4)}</td><td class="num mono">${fmt(key.inflight)} / ${fmt(key.cap)}</td><td>${escapeHtml(state.label)}</td><td class="num">${fmt(keyErrors(key))}</td></tr>`;
-    });
-    return entityTable('<th>Key 槽位</th><th>上游</th><th>供应商</th><th>模型</th><th class="num">活动 / 容量</th><th>状态</th><th class="num">错误</th>', rows, 7);
-  }
-  const rows = logicalModels.filter((model) => includes(model.name, ...(model.candidates || []), ...(model.requiredCapabilities || []))).map((model) => {
-    const candidates = new Set((model.candidates || []).map(normalizeModelName));
-    const modelProviders = providers.filter((provider) => providerSupports(provider, candidates));
-    const providerIds = new Set(modelProviders.map((provider) => provider.id));
-    const slots = keys.filter((key) => providerIds.has(key.deployment) && slotSupports(key, candidates));
-    const runtime = logicalStatus.find((item) => normalizeModelName(item.id || item.name) === normalizeModelName(model.name));
-    const available = runtime?.available || runtime?.health === 'available';
-    return `<tr><td><div class="entity-title"><span class="square-lamp ${available ? 'ok' : 'idle'}"></span><b class="mono">${escapeHtml(model.name)}</b></div></td><td>${tags(model.candidates || [], 5)}</td><td class="num">${fmt(modelProviders.length)}</td><td class="num">${fmt(slots.length)}</td><td>${escapeHtml(strategyName(model.candidateStrategy))}</td><td>${escapeHtml(available ? '可用' : healthName(runtime?.health))}</td><td><button class="text-action" data-action="route-select-logical" data-reveal="chain" data-id="${escapeHtml(model.name)}">查看链路</button></td></tr>`;
-  });
-  return entityTable('<th>任务逻辑模型</th><th>聚合模型</th><th class="num">上游</th><th class="num">Key</th><th>策略</th><th>状态</th><th>操作</th>', rows, 7);
-}
-
-function entityTable(head, rows, colspan, classes = '') {
-  return `<div class="table-wrap entity-table ${classes}"><table><thead><tr>${head}</tr></thead><tbody>${rows.join('') || `<tr><td colspan="${colspan}">当前视角没有匹配项</td></tr>`}</tbody></table></div>`;
-}
-
 function perspectiveButton(value, label, active) {
   return `<button class="${value === active ? 'active' : ''}" data-action="route-perspective" data-perspective="${value}">${label}</button>`;
 }
 
-function millerColumn(label, count, nodes) {
-  return `<section class="miller-column"><header><span>${escapeHtml(label)}</span><b class="mono">${escapeHtml(count)}</b></header><div>${nodes.join('') || '<div class="miller-empty">没有匹配项</div>'}</div></section>`;
+function millerColumn(lane, label, count, nodes, activeLane) {
+  return `<section class="miller-column ${lane === activeLane ? 'perspective-active' : ''}" data-lane="${escapeHtml(lane)}"><header><span>${escapeHtml(label)}</span><b class="mono">${escapeHtml(count)}</b></header><div>${nodes.join('') || '<div class="miller-empty">没有匹配项</div>'}</div></section>`;
 }
 
 function nodeButton(action, id, label, detailText, lamp, active, extra = {}) {
   const data = Object.entries(extra).map(([key, value]) => ` data-${key}="${escapeHtml(value)}"`).join('');
   return `<button class="miller-node ${active ? 'active' : ''}" data-action="${action}" data-id="${escapeHtml(id)}"${data}><span><span class="square-lamp ${lamp}"></span><b class="mono">${escapeHtml(label)}</b></span><small>${escapeHtml(detailText)}</small></button>`;
+}
+
+function relationshipInspector({
+  selectedLogical, selectedReal, selectedVendor, selectedProvider, selectedKey, selectedEgress,
+  realModels, providers, keys, logicalRuntime, detailLevel, vendorGroups,
+}) {
+  let kicker = '任务逻辑模型';
+  let title = selectedLogical.name;
+  let state = logicalRuntime?.available || logicalRuntime?.health === 'available'
+    ? { lamp: 'ok', label: '可用' }
+    : { lamp: 'idle', label: healthName(logicalRuntime?.health) };
+  let rows = [
+    detail('策略', strategyName(selectedLogical.candidateStrategy)),
+    detail('候选模型', `${selectedLogical.candidates?.length || 0} 个`),
+    detail('最大尝试', selectedLogical.maxAttempts || '—'),
+    detail('请求期限', selectedLogical.deadlineMs ? formatCountdown(selectedLogical.deadlineMs) : '—'),
+  ];
+  let models = selectedLogical.candidates || [];
+  let actions = `<button class="button secondary" data-action="edit-logical" data-id="${escapeHtml(selectedLogical.name)}">编辑逻辑模型</button>`;
+
+  if (selectedReal) {
+    const real = realModels.find((item) => normalizeModelName(item.name) === normalizeModelName(selectedReal)) || {};
+    const modelKeys = keys.filter(({ key }) => slotModels(key).has(normalizeModelName(selectedReal))).map(({ key }) => key);
+    state = slotSummary(modelKeys);
+    kicker = '聚合模型';
+    title = selectedReal;
+    rows = [
+      detail('质量级别', real.qualityTier || '—'),
+      detail('思考适配', real.thinkingAdapter || '—'),
+      detail('最大并发', real.maxInflight || '—'),
+      detail('可达 Key', modelKeys.length),
+    ];
+    models = real.capabilities || [];
+    actions = `<button class="button secondary" data-action="edit-real-model" data-id="${escapeHtml(selectedReal)}">编辑聚合策略</button>`;
+  }
+
+  if (selectedVendor) {
+    const vendor = vendorGroups.find((item) => item.id === selectedVendor);
+    const stats = summarizeKeys(vendor?.keys.map(({ key }) => key) || []);
+    state = vendor?.summary || { lamp: 'off', label: '没有槽位' };
+    kicker = '供应商分组';
+    title = selectedVendor;
+    rows = [
+      detail('上游', vendor?.providers.size || 0),
+      detail('Key', vendor?.keys.length || 0),
+      detail('可调度', stats.hot),
+      detail('冷却', stats.cooling),
+    ];
+    models = [...(vendor?.models || [])];
+    actions = '';
+  }
+
+  if (selectedProvider) {
+    const providerKeys = keys.filter(({ key }) => key.deployment === selectedProvider.id).map(({ key }) => key);
+    const summary = summarizeKeys(providerKeys);
+    state = !selectedProvider.enabled
+      ? { lamp: 'off', label: '已停用' }
+      : slotSummary(providerKeys);
+    kicker = '上游';
+    title = selectedProvider.label || selectedProvider.id;
+    rows = [
+      detail('配置 ID', selectedProvider.id),
+      detail('协议', `${selectedProvider.apiFormat || 'openai'} · ${selectedProvider.auth || 'bearer'}`),
+      detail('地址', selectedProvider.baseUrl || '—', 'break'),
+      detail('活动 / 容量', `${fmt(summary.inflight)} / ${fmt(summary.cap)}`),
+      detail('出口策略', proxyModeName(proxyPolicyValue(selectedProvider.proxy))),
+    ];
+    models = selectedProvider.models || [];
+    actions = `<button class="button secondary" data-action="inspect-provider" data-id="${escapeHtml(selectedProvider.id)}">完整详情</button><button class="button primary" data-action="edit-provider" data-id="${escapeHtml(selectedProvider.id)}">编辑上游</button>`;
+  }
+
+  if (selectedKey) {
+    const key = selectedKey.key;
+    state = slotState(key);
+    kicker = 'Key 槽位';
+    title = keyDisplayName(key, selectedKey.index, detailLevel);
+    const provider = providers.find((item) => item.id === key.deployment);
+    const egress = egressForKey(key, provider);
+    rows = [
+      detail('上游', provider?.label || key.deployment || '—'),
+      detail('供应商', vendorId(key)),
+      detail('活动 / 容量', `${fmt(key.inflight)} / ${fmt(key.cap)}`),
+      detail('今日 2XX / 错误', `${fmt(key.total_2xx_today)} / ${fmt(keyErrors(key))}`),
+      detail('出口', egress.label),
+      detail('冷却原因', key.cooldown_reason || '—'),
+    ];
+    models = [...slotModels(key)];
+    actions = provider ? `<button class="button secondary" data-action="inspect-provider" data-id="${escapeHtml(provider.id)}">查看所属上游</button>` : '';
+  }
+
+  if (selectedEgress) {
+    state = { lamp: selectedEgress.lamp, label: selectedEgress.lamp === 'bad' ? '出口异常' : '已关联' };
+    kicker = '代理出口';
+    title = selectedEgress.label;
+    rows = [
+      detail('路由方式', selectedEgress.detail),
+      detail('关联 Key', selectedEgress.keys.length),
+      detail('出口标识', selectedEgress.id),
+    ];
+    models = [];
+    actions = '<a class="button secondary" href="#connections">管理出口</a>';
+  }
+
+  return `<aside class="relationship-inspector" aria-live="polite">
+    <header><span>${escapeHtml(kicker)}</span><h3>${escapeHtml(title)}</h3></header>
+    <div class="inspector-state"><span class="square-lamp ${state.lamp}"></span><b>${escapeHtml(state.label)}</b></div>
+    <dl class="relationship-detail-list">${rows.join('')}</dl>
+    ${models.length ? `<section><span>关联能力与模型</span><div class="tag-cloud">${tags(models, 12)}</div></section>` : ''}
+    ${actions ? `<footer>${actions}</footer>` : ''}
+  </aside>`;
+}
+
+function pathSegment(label, action, id, extra = {}) {
+  const data = Object.entries(extra).map(([key, value]) => ` data-${key}="${escapeHtml(value)}"`).join('');
+  return `<button data-action="${action}" data-id="${escapeHtml(id)}" data-path="true"${data}>${escapeHtml(label)}</button>`;
+}
+
+function pathArrow() {
+  return '<i aria-hidden="true">→</i>';
+}
+
+function keySlotId(key, index) {
+  return key?.slot_id || `key-${String(index + 1).padStart(3, '0')}`;
+}
+
+function keyDisplayName(key, index, detailLevel) {
+  const slot = keySlotId(key, index);
+  return detailLevel === 'safe' ? `#${String(index + 1).padStart(3, '0')}` : key?.name || slot;
+}
+
+function vendorId(key) {
+  return key?.vendor || '未标注';
+}
+
+function groupVendors(entries) {
+  const groups = new Map();
+  for (const entry of entries) {
+    const id = vendorId(entry.key);
+    const group = groups.get(id) || { id, keys: [], providers: new Set(), models: new Set() };
+    group.keys.push(entry);
+    group.providers.add(entry.key.deployment || entry.key.provider || 'unknown');
+    slotModels(entry.key).forEach((model) => group.models.add(model));
+    groups.set(id, group);
+  }
+  return [...groups.values()].map((group) => ({
+    ...group,
+    summary: slotSummary(group.keys.map(({ key }) => key)),
+  })).sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function providerVendors(providerId, entries) {
+  return [...new Set(entries.filter(({ key }) => key.deployment === providerId).map(({ key }) => vendorId(key)))];
+}
+
+function egressForKey(key, provider) {
+  const node = key.proxy_node || key.proxyNode || '';
+  const profile = key.proxy_profile || key.proxyProfile || '';
+  const mode = key.proxy_mode || key.proxyMode || proxyPolicyValue(provider?.proxy);
+  if (node) return { id: `node:${node}`, label: node, detail: `${proxyModeName(mode)} · 固定节点` };
+  if (profile) return { id: `profile:${profile}`, label: profile, detail: `${proxyModeName(mode)} · 代理配置` };
+  return { id: `mode:${mode}`, label: proxyModeName(mode), detail: mode === 'direct' ? '不经过代理池' : '由出口策略选择节点' };
+}
+
+function groupEgress(entries, providers) {
+  const groups = new Map();
+  for (const entry of entries) {
+    const provider = providers.find((item) => item.id === entry.key.deployment);
+    const descriptor = egressForKey(entry.key, provider);
+    const group = groups.get(descriptor.id) || { ...descriptor, keys: [] };
+    group.keys.push(entry);
+    groups.set(group.id, group);
+  }
+  return [...groups.values()].map((group) => ({
+    ...group,
+    lamp: group.keys.some(({ key }) => key.proxy_error) ? 'bad' : slotSummary(group.keys.map(({ key }) => key)).lamp,
+  }));
 }
 
 function uniqueModels(models) {

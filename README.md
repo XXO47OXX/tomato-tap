@@ -118,6 +118,33 @@ curl http://127.0.0.1:8888/oa/v1/chat/completions \
 
 后层只覆盖自身明确设置的字段，其余请求内容保持不变。
 
+### 保留额度型备用 Key
+
+普通真实模型路由也可以把低权重部署保留为“额度耗尽后才启用”的备用：
+
+```json
+{
+  "weight": 1,
+  "fallbackAdmission": "higher_weight_quota_closed",
+  "quotaSignalProfile": "kimi-coding"
+}
+```
+
+当更高权重部署支持同一模型时，只有它们都被明确的额度信号关闭，备用部署才会接收请求。短时限流、网络失败、5xx、认证失败或探针自身失败不会提前消耗备用额度；如果该模型只有备用部署支持，它仍可正常作为主路由。
+
+### 可选 Cursor ACP 桥接
+
+Cursor API Key 用于认证 `cursor-agent`，不是普通模型 API Key。Tomato Tap 可以把它作为独立、纯文本且仅回环监听的 OpenAI Chat Completions 上游：
+
+```dotenv
+TOMATO_TAP_CURSOR_ACP_ENABLED=true
+TOMATO_TAP_CURSOR_ACP_API_KEY=<cursor-api-key>
+TOMATO_TAP_CURSOR_ACP_CWD=/path/to/workspace
+TOMATO_TAP_CURSOR_ACP_MAX_CONCURRENT=1
+```
+
+安装 Cursor CLI 后，请求 `POST /cursor/v1/chat/completions`，模型名使用 `cursor-agent`。桥接器为每次请求创建一个 ACP 会话，只返回文本并拒绝文件、终端、MCP 和工具调用；监听地址强制为回环地址。可用 `GET http://127.0.0.1:8891/health` 做不消耗模型额度的检查。
+
 ## 配置与数据边界
 
 | 数据 | 默认位置 | 是否提交 |

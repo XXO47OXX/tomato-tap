@@ -56,6 +56,7 @@ test('admin console serves one local UI and redacted management APIs', async () 
     assert.equal((await call(server, '/admin/connections')).status, 200);
     assert.equal((await call(server, '/admin/diagnostics')).status, 200);
     assert.equal((await call(server, '/admin/assets/model-picker.js')).status, 200);
+    assert.equal((await call(server, '/admin/assets/route-state.js')).status, 200);
 
     const bootstrap = await call(server, '/admin/api/bootstrap');
     assert.equal(bootstrap.status, 200);
